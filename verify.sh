@@ -5,8 +5,8 @@
 #   ./verify.sh              pruebas y comparación
 #   ./verify.sh --captura    además, captura la ventana de PCSX2
 #
-# Necesita PCSX2 con BIOS (ruta en .cargo/config.toml) y el compilador de
-# Rust para PS2 en D:/Proyectos/PS2Rust.
+# Necesita PCSX2 con BIOS (ruta en la variable de entorno PCSX2_EXE) y el
+# compilador de Rust para PS2 (`cargo ps2`, de PS2Rust).
 cd "$(dirname "$0")"
 mkdir -p out
 fail=0

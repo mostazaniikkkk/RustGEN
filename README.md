@@ -23,15 +23,16 @@ chispas de golpe y contador de combo (rasterizador de PC).*
 
 ## Jugar
 
-Requisitos: [PS2Rust](https://github.com/mostazaniikkkk/PS2Rust) en `D:/Proyectos/PS2Rust`
-y PCSX2 con BIOS y la opción *Host Filesystem* activada. Las dos rutas están en
-[.cargo/config.toml](.cargo/config.toml) y en [ps2/Cargo.toml](ps2/Cargo.toml): cámbialas
-por las tuyas.
+Requisitos:
 
-> **Aviso:** el programa de PS2 necesita dos funciones de la std de PS2Rust
-> (`std::os::ps2::SifRpcClient` y `std::os::ps2::reset_iop`) que todavía no están en el
-> repositorio público de PS2Rust. Hasta que se publiquen, sólo compilan el motor y la
-> herramienta de PC (`cargo build`, `cargo test`).
+- El compilador de Rust para PS2, [PS2Rust](https://github.com/mostazaniikkkk/PS2Rust):
+
+  ```
+  cargo install --git https://github.com/mostazaniikkkk/PS2Rust cargo-ps2
+  ```
+
+- PCSX2 con BIOS y la opción *Host Filesystem* activada, y su ruta en la variable de
+  entorno `PCSX2_EXE` (por ejemplo `C:\PCSX2\pcsx2-qt.exe`).
 
 ```
 .\run-ps2.ps1          # PowerShell
@@ -181,9 +182,9 @@ Tras diez segundos sin tocar nada en el título empieza una pelea de demostraci�
   Necesita dos módulos de PS2SDK ([ps2/modules/](ps2/modules/README.md)), que van
   dentro del ELF y se cargan en el IOP desde memoria ([iop.rs](ps2/src/iop.rs)).
 
-Para todo esto hizo falta añadir dos cosas a la std de PS2Rust
-(`toolchain/std-ps2/os_ext.rs` de ese proyecto): `std::os::ps2::SifRpcClient`, un cliente
-RPC público, y `std::os::ps2::reset_iop`, que reinicia el procesador de E/S.
+Para todo esto se usan dos funciones de la std de PS2Rust que nacieron con este
+proyecto: `std::os::ps2::SifRpcClient`, un cliente RPC para hablar con los módulos del
+IOP, y `std::os::ps2::reset_iop`, que reinicia el procesador de E/S.
 
 ## Verificación
 

@@ -5,7 +5,8 @@
 #   .\run-ps2.ps1 test tests\ai300.cfg [...]    prueba automática
 #
 # Los argumentos restantes se pasan a `cargo ps2 run` (por ejemplo
-# --screenshot out\ps2.png). La ruta de PCSX2 está en .cargo\config.toml.
+# --screenshot out\ps2.png). La ruta de PCSX2 se toma de la variable de entorno
+# PCSX2_EXE.
 param([string]$Mode = '', [string]$Config = '', [Parameter(ValueFromRemainingArguments = $true)]$Rest)
 
 $ErrorActionPreference = 'Stop'

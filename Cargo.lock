@@ -24,3 +24,4 @@ dependencies = [
 [[package]]
 name = "ps2"
 version = "0.1.0"
+source = "git+https://github.com/mostazaniikkkk/PS2Rust#2e2acc30aba62f61847c3cccbc2e45c2e830be59"

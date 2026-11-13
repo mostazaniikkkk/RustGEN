@@ -3,7 +3,9 @@
     python tests/run-iso.py <imagen.iso> <salida.log> [segundos]
 
 Termina cuando el juego imprime "prueba terminada" (código 0) o se agota el
-tiempo (código 1). La ruta de PCSX2 se lee de .cargo/config.toml.
+tiempo (código 1). La ruta de PCSX2 es la variable de entorno PCSX2_EXE o,
+si no está, la que haya en un .cargo/config.toml de esta carpeta o de las
+que la contienen.
 """
 import os
 import re
@@ -13,9 +15,19 @@ import time
 
 iso, out = sys.argv[1], sys.argv[2]
 timeout = float(sys.argv[3]) if len(sys.argv) > 3 else 120
-here = os.path.dirname(os.path.abspath(__file__))
-cfg = open(os.path.join(here, "..", ".cargo", "config.toml"), encoding="utf-8").read()
-exe = os.environ.get("PCSX2_EXE") or re.search(r'PCSX2_EXE\s*=\s*"([^"]+)"', cfg).group(1)
+exe = os.environ.get("PCSX2_EXE")
+folder = os.path.dirname(os.path.abspath(__file__))
+while not exe:
+    cfg = os.path.join(folder, ".cargo", "config.toml")
+    if os.path.exists(cfg):
+        found = re.search(r'PCSX2_EXE\s*=\s*"([^"]+)"', open(cfg, encoding="utf-8").read())
+        exe = found.group(1) if found else None
+    parent = os.path.dirname(folder)
+    if parent == folder:
+        break
+    folder = parent
+if not exe:
+    sys.exit("no sé dónde está PCSX2: define la variable de entorno PCSX2_EXE")
 log = os.path.abspath(out) + ".emu"
 if os.path.exists(log):
     os.remove(log)
