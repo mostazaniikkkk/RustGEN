@@ -1,0 +1,9 @@
+; Recorre el screenpack: título -> VS MODE -> elegir los dos personajes y el
+; escenario -> pantalla de versus -> pelea.
+60 1 D 2
+80 1 x 2
+140 1 x 2
+180 1 R 2
+200 1 y 2
+240 1 R 2
+260 1 a 2

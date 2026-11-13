@@ -1,0 +1,9 @@
+; El jugador 1 se acerca y lanza el super (dos cuartos de círculo + x).
+180 1 R 25
+240 1 D 2
+242 1 DR 2
+244 1 R 2
+246 1 D 2
+248 1 DR 2
+250 1 R 2
+252 1 Rx 2

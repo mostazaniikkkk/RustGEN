@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.sff binary
+*.snd binary
+*.fnt binary
+*.act binary
+*.irx binary
+*.png binary

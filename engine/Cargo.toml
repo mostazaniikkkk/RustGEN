@@ -1,0 +1,7 @@
+[package]
+name = "mugen"
+version = "0.1.0"
+edition = "2021"
+description = "Motor compatible con M.U.G.E.N, independiente de la plataforma"
+
+[dependencies]

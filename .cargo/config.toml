@@ -1,0 +1,6 @@
+# `cargo ps2 …` usa el compilador de Rust para PS2 de D:/Proyectos/PS2Rust.
+[alias]
+ps2 = "run --quiet --release --manifest-path D:/Proyectos/PS2Rust/toolchain/cargo-ps2/Cargo.toml --"
+
+[env]
+PCSX2_EXE = "D:/Emuladores/PCSX2 1.7.4/pcsx2-qt.exe"

@@ -1,0 +1,10 @@
+; Título -> WATCH -> Kung Fu Man contra uno al azar -> escenario al azar.
+; Después no se toca nada: pelea, pantalla de victoria y vuelta a la selección.
+60 1 D 2
+70 1 D 2
+80 1 D 2
+90 1 x 2
+150 1 x 2
+190 1 R 2
+210 1 b 2
+250 1 a 2

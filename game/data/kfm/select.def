@@ -1,0 +1,17 @@
+; Personajes y escenarios del juego.
+;
+; [Characters]: uno por línea, `nombre, escenario` (la carpeta de chars/ y el
+; escenario de su combate en el modo arcade). Opciones: `order=n` (nivel en
+; el arcade) e `includestage=0` (no ofrecer su escenario en la lista).
+; `randomselect` pone la casilla de elección al azar y `blank` una vacía.
+
+[Characters]
+kfm, stages/kfm.def
+randomselect
+
+[ExtraStages]
+stages/stage0.def
+
+[Options]
+; Combates del modo arcade por cada nivel de `order`.
+arcade.maxmatches = 6,1,1,0,0,0,0,0,0,0

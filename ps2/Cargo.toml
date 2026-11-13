@@ -1,0 +1,16 @@
+[package]
+name = "mugen-ps2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mugen = { path = "../engine" }
+ps2 = { path = "D:/Proyectos/PS2Rust/crates/ps2", default-features = false }
+
+[build-dependencies]
+mugen = { path = "../engine" }
+
+[features]
+# Versión para disco: los datos no van dentro del ELF, sino en GAME.PAK
+# junto a él, y se leen del disco cuando hacen falta.
+disc = []
