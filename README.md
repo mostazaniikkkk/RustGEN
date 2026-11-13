@@ -25,7 +25,13 @@ chispas de golpe y contador de combo (rasterizador de PC).*
 
 Requisitos: [PS2Rust](https://github.com/mostazaniikkkk/PS2Rust) en `D:/Proyectos/PS2Rust`
 y PCSX2 con BIOS y la opción *Host Filesystem* activada. Las dos rutas están en
-[.cargo/config.toml](.cargo/config.toml).
+[.cargo/config.toml](.cargo/config.toml) y en [ps2/Cargo.toml](ps2/Cargo.toml): cámbialas
+por las tuyas.
+
+> **Aviso:** el programa de PS2 necesita dos funciones de la std de PS2Rust
+> (`std::os::ps2::SifRpcClient` y `std::os::ps2::reset_iop`) que todavía no están en el
+> repositorio público de PS2Rust. Hasta que se publiquen, sólo compilan el motor y la
+> herramienta de PC (`cargo build`, `cargo test`).
 
 ```
 .\run-ps2.ps1          # PowerShell
@@ -252,12 +258,22 @@ PNG, `--log` imprime el estado y `--keys` reproduce un guion de teclas. Con
 
 ## Créditos y licencias
 
-- Todo lo que hay en `game/` (Kung Fu Man, sus escenarios, los dos screenpacks, el
-  marcador y las fuentes) es contenido de muestra de M.U.G.E.N 1.1 beta 1, de Elecbyte,
-  con licencia Creative Commons no comercial y atribución opcional (apéndice de su
-  `readme.txt`; ver también el [readme de Kung Fu Man](game/chars/kfm/readme.txt)).
-- `ps2/modules/libsd.irx` y `sdrdrv.irx` son de [PS2SDK](https://github.com/ps2dev/ps2sdk),
-  con licencia AFL 2.0.
-- Los formatos SFF v2 y FNT se contrastaron con el código de
-  [Ikemen GO](https://github.com/ikemen-engine/Ikemen-GO), y los protocolos de los
-  módulos del IOP con el de PS2SDK.
+El código y la documentación de este repositorio son de dominio público:
+[CC0 1.0](LICENSE). Haz lo que quieras con ellos, sin pedir permiso ni dar crédito.
+
+Eso **no** incluye dos carpetas, que son de otros autores y conservan su licencia:
+
+- [game/](game): Kung Fu Man, sus escenarios, los dos screenpacks, el marcador y las
+  fuentes son contenido de muestra de M.U.G.E.N 1.1 beta 1, de Elecbyte, con licencia
+  Creative Commons no comercial y atribución opcional (apéndice de su `readme.txt`; ver
+  también el [readme de Kung Fu Man](game/chars/kfm/readme.txt)).
+- [ps2/modules/](ps2/modules/README.md): `libsd.irx` y `sdrdrv.irx` son de
+  [PS2SDK](https://github.com/ps2dev/ps2sdk), con licencia AFL 2.0.
+
+Además, la rutina que habilita la carga de módulos desde memoria en
+[ps2/src/iop.rs](ps2/src/iop.rs) es una adaptación de `sbv_patch_enable_lmb` de PS2SDK
+(AFL 2.0).
+
+Los formatos SFF v2 y FNT se contrastaron con el código de
+[Ikemen GO](https://github.com/ikemen-engine/Ikemen-GO), y los protocolos de los módulos
+del IOP y el parche de carga de módulos con el de PS2SDK.
