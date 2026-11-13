@@ -3,6 +3,7 @@
 use crate::air::{AnimState, AnimTable};
 use crate::cmd::{CommandSet, CommandState};
 use crate::cns::{self, Ctrl, StateDef, States};
+use crate::ents::Projectile;
 use crate::expr::{Expr, Trig, V, AT_A, AT_C, AT_CLASS, AT_S, AT_STATE};
 use crate::fx::{AfterImage, Explod, PalFx};
 use crate::gfx::{Frame, PalRef, SoundCmd, SpriteCmd, Trans, SCREEN_W};
@@ -175,7 +176,12 @@ pub struct Bind {
     pub to: usize,
     pub pos: (f32, f32),
     pub time: i32,
+    /// 1 = mira como aquel a quien sigue, -1 = al revés, 0 = no cambia.
+    pub facing: i32,
 }
+
+/// Sin dueño: el `parent` de un helper cuyo creador ya no existe.
+pub const NOBODY: usize = usize::MAX;
 
 /// Datos fijos de un personaje (lo que hay en sus archivos).
 pub struct CharDef {
@@ -204,6 +210,7 @@ pub struct CharDef {
     pub air_front: f32,
     pub height: f32,
     pub attack_dist: f32,
+    pub proj_attack_dist: f32,
     pub shadowoffset: f32,
     pub draw_offset: (f32, f32),
     pub airjump_num: i32,
@@ -383,6 +390,7 @@ impl CharDef {
             air_front: k("size.air.front", 12.0),
             height: k("size.height", 60.0),
             attack_dist: k("size.attack.dist", 160.0),
+            proj_attack_dist: k("size.proj.attack.dist", 90.0),
             shadowoffset: k("size.shadowoffset", 0.0),
             draw_offset: (k("size.draw.offset.x", 0.0), k("size.draw.offset.y", 0.0)),
             airjump_num: k("movement.airjump.num", 0.0) as i32,
@@ -413,6 +421,8 @@ pub struct Char {
     pub physics: u8,
     pub ctrl: bool,
     pub life: i32,
+    /// Vida máxima: la del personaje por el porcentaje de las opciones.
+    pub life_max: i32,
     pub power: i32,
     pub anim: AnimState,
     pub ivar: Vec<Cell<i32>>,
@@ -466,6 +476,45 @@ pub struct Char {
     pub combo: i32,
     /// Vida "retrasada" de la barra (la parte roja).
     pub life_lag: f32,
+    // Helpers. Los jugadores son los índices 0 y 1; el resto de la lista
+    // son helpers, y un hueco con `active = false` está libre.
+    pub active: bool,
+    pub helper: bool,
+    /// Quién lo creó (`NOBODY` si ya no existe) y de qué jugador desciende.
+    pub parent: usize,
+    pub root: usize,
+    /// Bando: 0 o 1.
+    pub team: usize,
+    pub helper_id: i32,
+    /// Identificador único (trigger `ID`).
+    pub uid: i32,
+    /// Lee los comandos del jugador.
+    pub keyctrl: bool,
+    /// Tiene sus propios efectos de paleta en vez de los de su jugador.
+    pub own_pal: bool,
+    pub scale: (f32, f32),
+    /// Ticks que puede moverse durante una pausa y una superpausa.
+    pub pause_move: (i32, i32),
+    /// Tick en que se creó: empieza a actuar en el siguiente.
+    pub born: i32,
+    /// Parado por una pausa en este tick.
+    pub frozen: bool,
+}
+
+/// Lo que un golpe cambia en quien lo da. Un proyectil golpea "a través"
+/// de su dueño y después se lo devuelve todo.
+pub(crate) struct AttackSnap {
+    pos: [f32; 2],
+    vel: [f32; 2],
+    facing: i32,
+    stype: u8,
+    juggle_paid: bool,
+    hitdef_active: bool,
+    moves: [i32; 3],
+    hitpause: i32,
+    hitcount: i32,
+    sprpriority: i32,
+    targets: usize,
 }
 
 impl Char {
@@ -479,8 +528,10 @@ impl Char {
             .or_else(|| def.act_pals.get((palno - 1).max(0) as usize).copied())
             .unwrap_or(0);
         let cmd = CommandState::new(&def.cmds);
+        let scale = (def.xscale, def.yscale);
         Char {
             life: def.life,
+            life_max: def.life,
             juggle_left: def.airjuggle,
             def,
             idx,
@@ -540,7 +591,50 @@ impl Char {
             keys: 0,
             combo: 0,
             life_lag: 0.0,
+            active: true,
+            helper: false,
+            parent: idx,
+            root: idx,
+            team: idx & 1,
+            helper_id: 0,
+            uid: idx as i32 + 56,
+            keyctrl: true,
+            own_pal: false,
+            scale,
+            pause_move: (0, 0),
+            born: -1,
+            frozen: false,
         }
+    }
+
+    pub(crate) fn attack_snapshot(&self) -> AttackSnap {
+        AttackSnap {
+            pos: self.pos,
+            vel: self.vel,
+            facing: self.facing,
+            stype: self.stype,
+            juggle_paid: self.juggle_paid,
+            hitdef_active: self.hitdef_active,
+            moves: [self.move_contact, self.move_hit, self.move_guarded],
+            hitpause: self.hitpause,
+            hitcount: self.hitcount,
+            sprpriority: self.sprpriority,
+            targets: self.targets.len(),
+        }
+    }
+
+    pub(crate) fn restore_attack(&mut self, s: AttackSnap) {
+        self.pos = s.pos;
+        self.vel = s.vel;
+        self.facing = s.facing;
+        self.stype = s.stype;
+        self.juggle_paid = s.juggle_paid;
+        self.hitdef_active = s.hitdef_active;
+        [self.move_contact, self.move_hit, self.move_guarded] = s.moves;
+        self.hitpause = s.hitpause;
+        self.hitcount = s.hitcount;
+        self.sprpriority = s.sprpriority;
+        self.targets.truncate(s.targets);
     }
 
     /// Ancho del cuerpo por delante o por detrás, según esté en el aire.
@@ -596,10 +690,10 @@ impl Char {
     }
 
     /// Cajas de colisión del cuadro actual, en coordenadas del escenario.
-    fn boxes(&self, attack: bool) -> Vec<[f32; 4]> {
+    pub(crate) fn boxes(&self, attack: bool) -> Vec<[f32; 4]> {
         let Some(f) = self.anim.frame() else { return Vec::new() };
         let list = if attack { &f.clsn1 } else { &f.clsn2 };
-        let (sx, sy) = (self.facing as f32 * self.def.xscale, self.def.yscale);
+        let (sx, sy) = (self.facing as f32 * self.scale.0, self.scale.1);
         list.iter()
             .map(|b| {
                 let (x1, x2) = (self.pos[0] + b[0] as f32 * sx, self.pos[0] + b[2] as f32 * sx);
@@ -609,7 +703,7 @@ impl Char {
     }
 }
 
-fn overlap(a: &[[f32; 4]], b: &[[f32; 4]]) -> bool {
+pub(crate) fn overlap(a: &[[f32; 4]], b: &[[f32; 4]]) -> bool {
     a.iter().any(|p| b.iter().any(|q| p[0] <= q[2] && q[0] <= p[2] && p[1] <= q[3] && q[1] <= p[3]))
 }
 
@@ -648,6 +742,11 @@ pub struct Game {
     pub fight: Rc<Fight>,
     pub round: Round,
     pub explods: Vec<Explod>,
+    pub projs: Vec<Projectile>,
+    /// Último tick en que un proyectil golpeó, fue bloqueado o anulado:
+    /// (jugador, identificador, [golpe, bloqueo, anulación]).
+    pub proj_log: Vec<(usize, i32, [i32; 3])>,
+    pub next_uid: i32,
     pub cam: [f32; 2],
     pub tick: i32,
     pub pause: PauseState,
@@ -663,13 +762,23 @@ pub struct Game {
     /// Modo entrenamiento: sin reloj ni K.O.
     pub training: bool,
     pub show_bars: bool,
+    /// Segundos del reloj de cada ronda; 0 = sin límite.
+    pub round_secs: i32,
+    /// Dificultad de la máquina: 1 a 8.
+    pub ai_level: i32,
 }
 
 impl Game {
-    /// Carga una pelea entre dos personajes por nombre. `root` es la carpeta
-    /// con `chars/`, `data/`, `stages/` y `font/`.
+    /// Carga una pelea entre dos personajes por nombre (o por la ruta de su
+    /// `.def`). `root` es la carpeta con `chars/`, `data/`, `stages/` y `font/`.
     pub fn new(root: &str, p1: &str, p2: &str, stage: &str) -> Result<Game, String> {
-        let def = |name: &str| format!("{root}/chars/{name}/{name}.def");
+        let def = |name: &str| {
+            if name.to_ascii_lowercase().ends_with(".def") {
+                name.to_string()
+            } else {
+                format!("{root}/chars/{name}/{name}.def")
+            }
+        };
         Game::load(root, &format!("{root}/data/fight.def"), &def(p1), &def(p2), &format!("{root}/stages/{stage}.def"), [1, 1])
     }
 
@@ -702,6 +811,9 @@ impl Game {
             fight,
             round: Round::default(),
             explods: Vec::new(),
+            projs: Vec::new(),
+            proj_log: Vec::new(),
+            next_uid: 58,
             cam: [0.0; 2],
             tick: 0,
             pause: PauseState::default(),
@@ -714,9 +826,23 @@ impl Game {
             finished: false,
             training: false,
             show_bars: true,
+            round_secs: 99,
+            ai_level: 4,
         };
         g.start_match();
         Ok(g)
+    }
+
+    /// Reglas de la pelea que salen de las opciones: vida inicial (en tanto
+    /// por ciento de la del personaje), segundos de reloj (0 = sin límite) y
+    /// dificultad de la máquina. Vuelve a empezar la pelea con ellas.
+    pub fn set_rules(&mut self, life_pct: i32, round_secs: i32, ai_level: i32) {
+        for ch in self.chars.iter_mut().take(2) {
+            ch.life_max = (ch.def.life * life_pct / 100).max(1);
+        }
+        self.round_secs = round_secs;
+        self.ai_level = ai_level.clamp(1, 8);
+        self.start_match();
     }
 
     pub fn play(&mut self, bank: u16, group: i32, number: i32, chan: i32, vol: f32) {
@@ -820,7 +946,8 @@ impl Game {
     }
 
     pub fn add_power(&mut self, c: usize, amount: i32) {
-        let ch = &mut self.chars[c];
+        let root = self.chars[c].root;
+        let ch = &mut self.chars[root];
         ch.power = (ch.power + amount).clamp(0, 3000);
     }
 
@@ -929,18 +1056,33 @@ impl Game {
 
     /// Un tick de lógica de un personaje: comandos y controladores.
     fn action(&mut self, c: usize, keys: u16) {
+        if !self.chars[c].active || self.chars[c].born == self.tick {
+            return;
+        }
         // Los objetivos se sueltan cuando dejan de estar golpeados.
         let targets: Vec<usize> = self.chars[c].targets.clone();
-        self.chars[c].targets = targets.into_iter().filter(|&t| self.chars[t].movetype == b'h' || self.chars[t].state_owner != t).collect();
+        self.chars[c].targets =
+            targets.into_iter().filter(|&t| self.chars[t].active && (self.chars[t].movetype == b'h' || self.chars[t].state_owner != t)).collect();
 
-        let frozen = self.pause.on() && (self.pause.by != c || self.pause.movetime <= 0);
+        let mut frozen = self.pause.on() && (self.pause.by != c || self.pause.movetime <= 0);
+        if frozen {
+            // Un helper puede traer permiso para moverse parte de la pausa.
+            let darken = self.pause.darken;
+            let ch = &mut self.chars[c];
+            let allowed = if darken { &mut ch.pause_move.1 } else { &mut ch.pause_move.0 };
+            if *allowed > 0 {
+                *allowed -= 1;
+                frozen = false;
+            }
+        }
+        self.chars[c].frozen = frozen;
         {
             let ch = &mut self.chars[c];
             let rel = CommandState::relative(keys, ch.facing);
             let def = ch.def.clone();
             ch.cmd.update(&def.cmds, rel);
         }
-        if self.chars[c].ai {
+        if self.chars[c].ai && !self.chars[c].helper {
             crate::ai::think(self, c);
         }
         if frozen {
@@ -950,12 +1092,14 @@ impl Game {
         let paused = self.chars[c].hitpause > 0;
         if !paused {
             let ch = &mut self.chars[c];
+            // Un helper no empuja la cámara ni choca con el borde si no lo pide.
+            let player = !ch.helper;
             ch.assert = 0;
             ch.width_player = (0.0, 0.0);
             ch.width_edge = (0.0, 0.0);
             ch.posfreeze = (false, false);
-            ch.screenbound = true;
-            ch.movecamera = (true, true);
+            ch.screenbound = player;
+            ch.movecamera = (player, player);
             ch.playerpush = true;
             for n in ch.nothitby.iter_mut() {
                 if n.1 > 0 {
@@ -980,15 +1124,19 @@ impl Game {
             if ch.stateno == 5110 && ch.time >= ch.def.liedown_time && ch.life > 0 && ch.state_owner == c {
                 self.change_state(c, 5120, None);
             }
-            if self.chars[c].life > 0 && self.round.state == 2 {
+            if self.chars[c].life > 0 && self.round.state == 2 && self.chars[c].keyctrl {
                 self.auto_moves(c);
             }
         }
         self.chars[c].keys = keys;
 
-        let own = self.chars[c].state_owner == c;
+        // Un helper no ejecuta el estado -3, y el -1 sólo si lee comandos.
+        let (own, helper, keyctrl) = (self.chars[c].state_owner == c, self.chars[c].helper, self.chars[c].keyctrl);
         for no in [-3, -2, -1] {
             if (no == -3 || no == -1) && !own {
+                continue;
+            }
+            if (no == -3 && helper) || (no == -1 && !keyctrl) {
                 continue;
             }
             if let Some(sd) = self.chars[c].def.states.get(&no).cloned() {
@@ -999,11 +1147,18 @@ impl Game {
         }
         // El estado actual; si cambia, el nuevo se ejecuta en el mismo tick.
         for _ in 0..12 {
+            // Un helper puede haberse retirado (`DestroySelf`).
+            if !self.chars[c].active {
+                return;
+            }
             let no = self.chars[c].stateno;
             let Some(sd) = self.statedef(c, no) else { break };
             if !self.run_state(c, &sd, paused) {
                 break;
             }
+        }
+        if !self.chars[c].active {
+            return;
         }
         if paused {
             self.chars[c].hitpause -= 1;
@@ -1014,12 +1169,12 @@ impl Game {
 
     /// Movimiento, animación y contadores de un personaje.
     fn update(&mut self, c: usize) {
-        let frozen = self.pause.on() && (self.pause.by != c || self.pause.movetime <= 0);
+        let tick = self.tick;
+        let ch = &mut self.chars[c];
         // `action` ya descontó la pausa de golpe de este tick.
-        if frozen {
+        if !ch.active || ch.born == tick || ch.frozen {
             return;
         }
-        let ch = &mut self.chars[c];
         ch.palfx.step();
         if ch.hitpause > 0 {
             return;
@@ -1066,9 +1221,15 @@ impl Game {
     fn apply_binds(&mut self) {
         for c in 0..self.chars.len() {
             let Some(b) = self.chars[c].bind else { continue };
+            if !self.chars[c].active {
+                continue;
+            }
             let (tp, tf) = (self.chars[b.to].pos, self.chars[b.to].facing);
             let ch = &mut self.chars[c];
             ch.pos = [tp[0] + b.pos.0 * tf as f32, tp[1] + b.pos.1];
+            if b.facing != 0 {
+                ch.facing = tf * b.facing;
+            }
             ch.bind = if b.time > 1 || b.time < 0 { Some(Bind { time: if b.time > 0 { b.time - 1 } else { b.time }, ..b }) } else { None };
         }
     }
@@ -1097,67 +1258,55 @@ impl Game {
 
     fn can_hit(&self, a: usize, d: usize, h: &HitDef) -> bool {
         let (ach, dch) = (&self.chars[a], &self.chars[d]);
-        if self.round.state > 3 || (self.round.state == 3 && self.round.over_time > self.fight.over_hittime) {
-            return false;
-        }
-        let hit_state = dch.movetype == b'h';
-        let falling = hit_state && dch.ghv.fall;
-        let ok = match dch.stype {
-            b's' => h.hitflag & HF_H != 0,
-            b'c' => h.hitflag & HF_L != 0,
-            b'a' => h.hitflag & HF_A != 0 && (!falling || h.hitflag & HF_F != 0),
-            _ => h.hitflag & HF_D != 0,
-        };
-        if !ok || (h.hitflag & HF_PLUS != 0 && !hit_state) || (h.hitflag & HF_MINUS != 0 && hit_state) {
-            return false;
-        }
-        for &(mask, time, hitby) in &dch.nothitby {
-            if time > 0 && attr_match(h.attr, mask) != hitby {
-                return false;
-            }
-        }
-        // Malabares: un rival que cae sólo se puede golpear si quedan puntos.
-        if falling && !ach.juggle_paid && !ach.has(AS_NOJUGGLECHECK) && dch.juggle_left < ach.state_juggle {
-            return false;
-        }
-        overlap(&ach.boxes(true), &dch.boxes(false))
+        let juggle = if ach.juggle_paid || ach.has(AS_NOJUGGLECHECK) { None } else { Some(ach.state_juggle) };
+        self.hittable(d, h, juggle) && overlap(&ach.boxes(true), &dch.boxes(false))
     }
 
+    /// Golpes entre personajes: cada ataque activo busca a quién alcanza
+    /// del otro bando, primero los jugadores y después sus helpers.
     fn resolve_hits(&mut self) {
         for a in 0..self.chars.len() {
-            let d = self.enemy(a);
-            if !self.chars[a].hitdef_active || self.chars[a].hitpause > 0 {
-                continue;
-            }
-            let Some(h) = self.chars[a].hitdef.clone() else { continue };
-
-            // Contraataque: el rival tiene un ReversalDef que toca nuestro golpe.
-            if let Some(rev) = self.chars[d].reversal.clone() {
-                if rev.attr != 0 && attr_match(h.attr, rev.attr) && overlap(&self.chars[d].boxes(true), &self.chars[a].boxes(true)) {
-                    self.chars[a].hitdef_active = false;
-                    self.chars[a].move_reversed = 1;
-                    self.chars[a].hitpause = rev.pausetime.1;
-                    self.chars[d].hitpause = rev.pausetime.0;
-                    self.chars[d].reversal = None;
-                    self.spark(d, a, rev.sparkno, rev.sparkxy);
-                    self.hit_sound(d, rev.hitsound);
-                    if let Some(s) = rev.p1stateno {
-                        self.change_state(d, s, Some(d));
-                    }
-                    if let Some(s) = rev.p2stateno {
-                        self.change_state(a, s, Some(d));
-                    }
+            for d in 0..self.chars.len() {
+                let (ach, dch) = (&self.chars[a], &self.chars[d]);
+                if !ach.active || !ach.hitdef_active || ach.hitpause > 0 {
+                    break;
+                }
+                if !dch.active || dch.team == ach.team {
                     continue;
                 }
+                let Some(h) = ach.hitdef.clone() else { break };
+
+                // Contraataque: el rival tiene un ReversalDef que toca nuestro golpe.
+                if let Some(rev) = self.chars[d].reversal.clone() {
+                    if rev.attr != 0 && attr_match(h.attr, rev.attr) && overlap(&self.chars[d].boxes(true), &self.chars[a].boxes(true)) {
+                        self.chars[a].hitdef_active = false;
+                        self.chars[a].move_reversed = 1;
+                        self.chars[a].hitpause = rev.pausetime.1;
+                        self.chars[d].hitpause = rev.pausetime.0;
+                        self.chars[d].reversal = None;
+                        self.spark(d, a, rev.sparkno, rev.sparkxy);
+                        self.hit_sound(d, rev.hitsound);
+                        if let Some(s) = rev.p1stateno {
+                            self.change_state(d, s, Some(d));
+                        }
+                        if let Some(s) = rev.p2stateno {
+                            self.change_state(a, s, Some(d));
+                        }
+                        break;
+                    }
+                }
+                if !self.can_hit(a, d, &h) {
+                    continue;
+                }
+                self.apply_hit(a, d, &h, false);
+                break;
             }
-            if !self.can_hit(a, d, &h) {
-                continue;
-            }
-            self.apply_hit(a, d, &h);
         }
     }
 
-    fn apply_hit(&mut self, a: usize, d: usize, h: &HitDef) {
+    /// Aplica un golpe de `a` a `d`. `proj`: lo da un proyectil de `a`, así
+    /// que no cambia el estado ni la orientación de `a`.
+    pub(crate) fn apply_hit(&mut self, a: usize, d: usize, h: &HitDef, proj: bool) {
         let (dstype, dno) = (self.chars[d].stype, self.chars[d].stateno);
         let guard_ok = match dstype {
             b's' => h.guardflag & HF_H != 0,
@@ -1187,7 +1336,7 @@ impl Game {
             if !ach.juggle_paid && was_hit && prev.fall {
                 ach.juggle_paid = true;
             }
-            if h.p1facing < 0 {
+            if h.p1facing < 0 && !proj {
                 ach.facing = -ach.facing;
             }
         }
@@ -1282,10 +1431,13 @@ impl Game {
             ach.move_hit = 1;
             ach.hitpause = h.pausetime.0;
             ach.hitcount += h.numhits.max(0);
-            ach.combo = if was_hit { ach.combo + h.numhits.max(0) } else { h.numhits.max(0) };
             if !ach.targets.contains(&d) {
                 ach.targets.push(d);
             }
+            // El contador de golpes seguidos es del jugador.
+            let root = self.chars[a].root;
+            let rch = &mut self.chars[root];
+            rch.combo = if was_hit { rch.combo + h.numhits.max(0) } else { h.numhits.max(0) };
             self.add_power(a, h.getpower.0);
             self.add_power(d, h.givepower.0);
             self.spark(a, d, h.sparkno, h.sparkxy);
@@ -1328,7 +1480,7 @@ impl Game {
                 self.chars[d].facing = if h.p2facing > 0 { af } else { -af };
             }
         }
-        if h.p1getp2facing != 0 {
+        if h.p1getp2facing != 0 && !proj {
             let df = self.chars[d].facing;
             self.chars[a].facing = if h.p1getp2facing > 0 { df } else { -df };
         }
@@ -1371,10 +1523,10 @@ impl Game {
             }
             self.change_state(d, next_state, Some(d));
         }
-        if let (Some(s), false) = (h.p1stateno, guarded) {
+        if let (Some(s), false, false) = (h.p1stateno, guarded, proj) {
             self.change_state(a, s, Some(a));
         }
-        if self.chars[d].life == 0 && self.round.state == 2 {
+        if self.chars[d].life == 0 && self.round.state == 2 && !self.chars[d].helper {
             self.round.ko_by_hit = true;
         }
     }
@@ -1420,8 +1572,11 @@ impl Game {
 
     fn clamp_players(&mut self) {
         let half = SCREEN_W as f32 / 2.0;
-        for ch in self.chars.iter_mut() {
-            ch.pos[0] = ch.pos[0].clamp(self.stage.left_bound, self.stage.right_bound);
+        for ch in self.chars.iter_mut().filter(|c| c.active) {
+            // Un helper puede salirse del escenario.
+            if !ch.helper {
+                ch.pos[0] = ch.pos[0].clamp(self.stage.left_bound, self.stage.right_bound);
+            }
             if ch.screenbound {
                 let (back, front) = (ch.width_edge.1, ch.width_edge.0);
                 let (wl, wr) = if ch.facing > 0 { (back, front) } else { (front, back) };
@@ -1437,7 +1592,7 @@ impl Game {
     fn update_camera(&mut self) {
         let half = SCREEN_W as f32 / 2.0;
         let st = &self.stage;
-        let followers: Vec<&Char> = self.chars.iter().filter(|c| c.movecamera.0).collect();
+        let followers: Vec<&Char> = self.chars.iter().filter(|c| c.active && c.movecamera.0).collect();
         if !followers.is_empty() && !self.pause.on() {
             let min = followers.iter().map(|c| c.pos[0]).fold(f32::MAX, f32::min);
             let max = followers.iter().map(|c| c.pos[0]).fold(f32::MIN, f32::max);
@@ -1453,7 +1608,7 @@ impl Game {
             }
             self.cam[0] = x.clamp(st.bound_left, st.bound_right);
         }
-        let high = self.chars.iter().filter(|c| c.movecamera.1).map(|c| c.pos[1]).fold(0.0f32, f32::min);
+        let high = self.chars.iter().filter(|c| c.active && c.movecamera.1).map(|c| c.pos[1]).fold(0.0f32, f32::min);
         let target = ((high + st.floortension).min(0.0) * st.verticalfollow).clamp(st.bound_high, st.bound_low);
         self.cam[1] += (target - self.cam[1]) * 0.5;
     }
@@ -1479,16 +1634,30 @@ impl Game {
                 return;
             }
         }
-        for c in 0..self.chars.len() {
-            self.action(c, input[c]);
+        // La lista puede crecer por el camino: los helpers recién creados
+        // empiezan a actuar en el tick siguiente.
+        let mut c = 0;
+        while c < self.chars.len() {
+            let ch = &self.chars[c];
+            let keys = if c < 2 {
+                input[c]
+            } else if ch.keyctrl {
+                input[ch.root]
+            } else {
+                0
+            };
+            self.action(c, keys);
+            c += 1;
         }
         for c in 0..self.chars.len() {
             self.update(c);
         }
         self.apply_binds();
         self.update_explods();
+        self.update_projs();
         if !self.pause.on() {
             self.resolve_hits();
+            self.resolve_proj_hits();
             self.push_players();
         }
         self.apply_binds();
@@ -1538,8 +1707,10 @@ impl Game {
         let sff = ch.def.sff;
         // Sólo la paleta principal del personaje cambia con `palno`.
         let idx = if spr_pal == 0 { ch.pal } else { spr_pal };
-        if ch.palfx.active() {
-            frame.dyn_pal(ch.palfx.apply(&self.sffs[sff as usize].pals[idx as usize]))
+        // Un helper sin paleta propia lleva los efectos de su jugador.
+        let fx = if ch.helper && !ch.own_pal { &self.chars[ch.root].palfx } else { &ch.palfx };
+        if fx.active() {
+            frame.dyn_pal(fx.apply(&self.sffs[sff as usize].pals[idx as usize]))
         } else {
             PalRef::Sff(sff, idx)
         }
@@ -1560,10 +1731,10 @@ impl Game {
             sx += if (self.tick / 2) % 2 == 0 { 2.0 } else { -2.0 };
         }
         let face = ch.facing as f32;
-        sx += face * (f.x as f32 + ch.def.draw_offset.0) * ch.def.xscale;
-        sy += (f.y as f32 + ch.def.draw_offset.1) * ch.def.yscale;
-        let scale_x = face * ch.def.xscale * if f.hflip { -1.0 } else { 1.0 };
-        let scale_y = ch.def.yscale * if f.vflip { -1.0 } else { 1.0 };
+        sx += face * (f.x as f32 + ch.def.draw_offset.0) * ch.scale.0;
+        sy += (f.y as f32 + ch.def.draw_offset.1) * ch.scale.1;
+        let scale_x = face * ch.scale.0 * if f.hflip { -1.0 } else { 1.0 };
+        let scale_y = ch.scale.1 * if f.vflip { -1.0 } else { 1.0 };
         ch.afterimage.draw(self, c, frame);
         let pal = self.char_pal(c, spr.pal, frame);
         frame.sprite(SpriteCmd { sff: ch.def.sff, spr: si, x: sx, y: sy, sx: scale_x, sy: scale_y, pal, trans: f.trans, clip: None, src: None });
@@ -1581,20 +1752,20 @@ impl Game {
         let st = &self.stage;
         let face = ch.facing as f32;
         let (sx, floor) = self.to_screen([ch.pos[0], 0.0]);
-        let x = sx + face * f.x as f32 * ch.def.xscale;
-        let scale_x = face * ch.def.xscale * if f.hflip { -1.0 } else { 1.0 };
+        let x = sx + face * f.x as f32 * ch.scale.0;
+        let scale_x = face * ch.scale.0 * if f.hflip { -1.0 } else { 1.0 };
         let flip_y = if f.vflip { -1.0 } else { 1.0 };
         // Reflejo en el suelo: el sprite invertido, translúcido.
         if st.reflection > 0 {
             let pal = self.char_pal(c, spr.pal, frame);
-            let y = floor - (ch.pos[1] + f.y as f32 * ch.def.yscale);
+            let y = floor - (ch.pos[1] + f.y as f32 * ch.scale.1);
             frame.sprite(SpriteCmd {
                 sff: ch.def.sff,
                 spr: si,
                 x,
                 y,
                 sx: scale_x,
-                sy: -ch.def.yscale * flip_y,
+                sy: -ch.scale.1 * flip_y,
                 pal,
                 trans: Trans::Add { src: (st.reflection / 2).clamp(0, 256) as u16, dst: 256 },
                 clip: None,
@@ -1608,9 +1779,9 @@ impl Game {
             let mut p = [col; 256];
             p[0] = 0;
             let pal = frame.dyn_pal(p);
-            let ys = -st.shadow_yscale * ch.def.yscale;
+            let ys = -st.shadow_yscale * ch.scale.1;
             // La sombra se aplasta contra el suelo aunque el personaje salte.
-            let y = floor + ch.def.shadowoffset + (ch.pos[1] + f.y as f32 * ch.def.yscale) * ys;
+            let y = floor + ch.def.shadowoffset + (ch.pos[1] + f.y as f32 * ch.scale.1) * ys;
             frame.sprite(SpriteCmd {
                 sff: ch.def.sff,
                 spr: si,
@@ -1627,7 +1798,14 @@ impl Game {
     }
 
     fn draw_clsn(&self, frame: &mut Frame) {
-        for ch in &self.chars {
+        for p in &self.projs {
+            for b in p.boxes() {
+                let (x0, y0) = self.to_screen([b[0], b[1]]);
+                let (x1, y1) = self.to_screen([b[2], b[3]]);
+                frame.rect(x0 as i32, y0 as i32, (x1 - x0) as i32 + 1, (y1 - y0) as i32 + 1, 0xff40_40ff, Trans::Add { src: 96, dst: 256 });
+            }
+        }
+        for ch in self.chars.iter().filter(|c| c.active) {
             for (attack, color) in [(false, 0xffff_4040u32), (true, 0xff40_40ff)] {
                 for b in ch.boxes(attack) {
                     let (x0, y0) = self.to_screen([b[0], b[1]]);
@@ -1651,15 +1829,17 @@ impl Game {
         if self.pause.on() && self.pause.darken {
             frame.rect(0, 0, 320, 240, 0xff00_0000, Trans::Add { src: 128, dst: 128 });
         }
-        for c in 0..self.chars.len() {
+        let mut order: Vec<usize> = (0..self.chars.len()).filter(|&c| self.chars[c].active).collect();
+        for &c in &order {
             self.draw_shadow(c, frame);
         }
         self.draw_explods(frame, false);
-        let mut order: Vec<usize> = (0..self.chars.len()).collect();
+        self.draw_projs(frame, false);
         order.sort_by_key(|&c| self.chars[c].sprpriority);
         for c in order {
             self.draw_char(c, frame);
         }
+        self.draw_projs(frame, true);
         self.draw_explods(frame, true);
         self.stage.draw(frame, &self.sffs, self.cam, shake, self.tick, 1);
         if self.show_clsn {
@@ -1674,7 +1854,13 @@ impl Game {
             let ch = &self.chars[i];
             format!("{}:{} a{} L{} P{} x{} y{}", ch.stateno, ch.time, ch.anim.no, ch.life, ch.power, ch.pos[0] as i32, ch.pos[1] as i32)
         };
-        format!("t{} r{}/{} [{}] [{}]", self.tick, self.round.no, self.round.state, c(0), c(1))
+        let mut s = format!("t{} r{}/{} [{}] [{}]", self.tick, self.round.no, self.round.state, c(0), c(1));
+        // Helpers y proyectiles en juego, sólo si los hay.
+        let helpers = self.chars.iter().filter(|c| c.active && c.helper).count();
+        if helpers + self.projs.len() > 0 {
+            s.push_str(&format!(" h{} p{}", helpers, self.projs.len()));
+        }
+        s
     }
 }
 

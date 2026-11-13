@@ -2,6 +2,7 @@
 
 use crate::air::{parse_trans, AnimState};
 use crate::cns::{Ctrl, Kind};
+use crate::ents::{HelperSpec, ProjSpec};
 use crate::expr::{self, parse_attr, Trig, V, AT_A};
 use crate::fx::{Explod, PalFx};
 use crate::game::*;
@@ -69,7 +70,7 @@ impl Game {
         // Hay prefijo si la letra va seguida de algo que no sea otra letra.
         let pref = (first == b's' || first == b'f') && b.len() > 1 && !b[1].is_ascii_alphabetic() && b[1] != b'(';
         let (has, rest) = if pref { (first as char == letter, &raw[1..]) } else { (false, raw) };
-        let vals: Vec<V> = expr::split_args(rest).into_iter().map(|a| expr::parse(a).map_or(V::I(0), |e| self.eval(c, &e))).collect();
+        let vals: Vec<V> = expr::parse_list(rest).into_iter().map(|e| e.map_or(V::I(0), |e| self.eval(c, &e))).collect();
         Some((has, vals))
     }
 
@@ -221,11 +222,91 @@ impl Game {
         }
     }
 
+    /// Dónde aparece y hacia dónde mira algo que crea `c` (un helper o un
+    /// proyectil), según su `postype` y el desplazamiento del parámetro `key`.
+    fn spawn_point(&self, c: usize, ctrl: &Ctrl, key: &str, proj: bool) -> ([f32; 2], i32) {
+        let (x, y) = (self.pf(c, ctrl, key, 0, 0.0), self.pf(c, ctrl, key, 1, 0.0));
+        let ch = &self.chars[c];
+        let o = &self.chars[self.enemy(c)];
+        let (left, right) = (self.screen_edge(false), self.screen_edge(true));
+        let turn = if self.pi(c, ctrl, "facing", 0, 1) < 0 { -1 } else { 1 };
+        let postype = ctrl.raw("postype").unwrap_or("p1").trim().to_ascii_lowercase();
+        // Un proyectil mira siempre como quien lo lanza.
+        let (pos, facing) = match postype.as_str() {
+            "p2" => ([o.pos[0] + x * o.facing as f32, o.pos[1] + y], o.facing * turn),
+            "front" => ([if ch.facing > 0 { right + x } else { left - x }, y], turn),
+            "back" => ([if ch.facing > 0 { left + x } else { right - x }, y], turn),
+            "left" => ([left + x, y], turn),
+            "right" => ([right + x, y], turn),
+            _ => ([ch.pos[0] + x * ch.facing as f32, ch.pos[1] + y], ch.facing * turn),
+        };
+        (pos, if proj { ch.facing } else { facing })
+    }
+
+    fn make_projectile(&mut self, c: usize, ctrl: &Ctrl) {
+        let (pos, facing) = self.spawn_point(c, ctrl, "offset", true);
+        let n = |k: &str, i: usize, d: i32| self.pi(c, ctrl, k, i, d);
+        let f = |k: &str, i: usize, d: f32| self.pf(c, ctrl, k, i, d);
+        let hit_anim = n("projhitanim", 0, -1);
+        let rem_anim = n("projremanim", 0, hit_anim);
+        let spec = ProjSpec {
+            id: n("projid", 0, 0),
+            anim: n("projanim", 0, 0),
+            hit_anim,
+            rem_anim,
+            cancel_anim: n("projcancelanim", 0, rem_anim),
+            pos,
+            facing,
+            vel: [f("velocity", 0, 0.0), f("velocity", 1, 0.0)],
+            rem_vel: [f("remvelocity", 0, 0.0), f("remvelocity", 1, 0.0)],
+            accel: [f("accel", 0, 0.0), f("accel", 1, 0.0)],
+            velmul: [f("velmul", 0, 1.0), f("velmul", 1, 1.0)],
+            scale: (f("projscale", 0, 1.0), f("projscale", 1, 1.0)),
+            remove: n("projremove", 0, 1) != 0,
+            remove_time: n("projremovetime", 0, -1),
+            hits: n("projhits", 0, 1),
+            miss_time: n("projmisstime", 0, 0),
+            priority: n("projpriority", 0, 1),
+            sprpriority: n("projsprpriority", 0, 3),
+            edge_bound: f("projedgebound", 0, 40.0),
+            stage_bound: f("projstagebound", 0, 40.0),
+            height_bound: (f("projheightbound", 0, -240.0), f("projheightbound", 1, 1.0)),
+            pause_move: (n("pausemovetime", 0, 0), n("supermovetime", 0, 0)),
+            hitdef: self.build_hitdef(c, ctrl),
+        };
+        self.spawn_projectile(c, spec);
+    }
+
+    fn make_helper(&mut self, c: usize, ctrl: &Ctrl) {
+        let (pos, facing) = self.spawn_point(c, ctrl, "pos", false);
+        let own = self.chars[c].scale;
+        let scale = match (self.popt(c, ctrl, "size.xscale", 0), self.popt(c, ctrl, "size.yscale", 0)) {
+            (None, None) => None,
+            (x, y) => Some((x.map_or(own.0, V::f), y.map_or(own.1, V::f))),
+        };
+        let spec = HelperSpec {
+            id: self.pi(c, ctrl, "id", 0, 0),
+            pos,
+            facing,
+            stateno: self.pi(c, ctrl, "stateno", 0, 0),
+            keyctrl: self.pi(c, ctrl, "keyctrl", 0, 0) != 0,
+            own_pal: self.pi(c, ctrl, "ownpal", 0, 0) != 0,
+            scale,
+            pause_move: (self.pi(c, ctrl, "pausemovetime", 0, 0), self.pi(c, ctrl, "supermovetime", 0, 0)),
+        };
+        if self.spawn_helper(c, spec).is_none() {
+            // Con `format!` y no con un texto fijo: copiar un literal de este
+            // tamaño genera cargas no alineadas que el legalizador de PS2Rust
+            // no sabe emparejar.
+            self.warn(format!("demasiados helpers a la vez (más de {}): no se crean más", crate::ents::MAX_HELPERS));
+        }
+    }
+
     /// Suma (o resta) vida respetando el K.O.
     pub fn life_add(&mut self, c: usize, amount: i32, kill: bool) {
         let training = self.training;
         let ch = &mut self.chars[c];
-        let max = ch.def.life;
+        let max = ch.life_max;
         ch.life = (ch.life + amount).min(max);
         if ch.life <= 0 {
             ch.life = if kill && ch.assert & AS_NOKO == 0 && !training { 0 } else { 1 };
@@ -379,8 +460,18 @@ impl Game {
                     ch.physics = l;
                 }
             }
-            Kind::VarSet | Kind::VarAdd => {
-                let add = ctrl.kind == Kind::VarAdd;
+            Kind::VarSet | Kind::VarAdd | Kind::ParentVarSet | Kind::ParentVarAdd => {
+                let add = matches!(ctrl.kind, Kind::VarAdd | Kind::ParentVarAdd);
+                // Los valores se calculan aquí; se guardan en mí o en mi creador.
+                let dst = if matches!(ctrl.kind, Kind::ParentVarSet | Kind::ParentVarAdd) {
+                    let parent = self.chars[c].parent;
+                    if !self.chars[c].helper || parent == NOBODY {
+                        return false;
+                    }
+                    parent
+                } else {
+                    c
+                };
                 let mut target: Option<(Trig, i32)> = None;
                 for (key, p) in &ctrl.params {
                     let Some((kind, idx)) = var_key(key) else { continue };
@@ -388,13 +479,13 @@ impl Game {
                     let v = self.eval(c, e);
                     match idx {
                         // `var(3) = expr`
-                        Some(i) => self.assign(c, kind, i, v, add),
+                        Some(i) => self.assign(dst, kind, i, v, add),
                         // `v = 3` junto con `value = expr`
                         None => target = Some((kind, v.i())),
                     }
                 }
                 if let (Some((kind, i)), Some(v)) = (target, value) {
-                    self.assign(c, kind, i, v, add);
+                    self.assign(dst, kind, i, v, add);
                 }
             }
             Kind::VarRangeSet => {
@@ -673,18 +764,19 @@ impl Game {
             }
             Kind::LifeSet => {
                 if let Some(v) = value {
-                    let max = self.chars[c].def.life;
+                    let max = self.chars[c].life_max;
                     self.chars[c].life = v.i().clamp(0, max);
                 }
             }
             Kind::PowerAdd => self.add_power(c, value.map_or(0, V::i)),
             Kind::PowerSet => {
                 if let Some(v) = value {
-                    self.chars[c].power = v.i().clamp(0, 3000);
+                    let root = self.chars[c].root;
+                    self.chars[root].power = v.i().clamp(0, 3000);
                 }
             }
             Kind::TargetBind => {
-                let b = Bind { to: c, pos: (self.pf(c, ctrl, "pos", 0, 0.0), self.pf(c, ctrl, "pos", 1, 0.0)), time: self.pi(c, ctrl, "time", 0, 1) };
+                let b = Bind { to: c, pos: (self.pf(c, ctrl, "pos", 0, 0.0), self.pf(c, ctrl, "pos", 1, 0.0)), time: self.pi(c, ctrl, "time", 0, 1), facing: 0 };
                 for t in self.chars[c].targets.clone() {
                     self.chars[t].bind = Some(b);
                 }
@@ -692,7 +784,7 @@ impl Game {
             Kind::BindToTarget => {
                 if let Some(&t) = self.chars[c].targets.first() {
                     let pos = (self.pf(c, ctrl, "pos", 0, 0.0), self.pf(c, ctrl, "pos", 1, 0.0));
-                    self.chars[c].bind = Some(Bind { to: t, pos, time: self.pi(c, ctrl, "time", 0, 1) });
+                    self.chars[c].bind = Some(Bind { to: t, pos, time: self.pi(c, ctrl, "time", 0, 1), facing: 0 });
                 }
             }
             Kind::TargetState => {
@@ -742,6 +834,24 @@ impl Game {
                 }
             }
             Kind::TargetDrop => self.chars[c].targets.clear(),
+            Kind::Helper => self.make_helper(c, ctrl),
+            Kind::Projectile => self.make_projectile(c, ctrl),
+            Kind::DestroySelf => {
+                // Sólo un helper puede retirarse; a un jugador no le hace nada.
+                if self.chars[c].helper {
+                    self.destroy_helper(c);
+                    return true;
+                }
+            }
+            Kind::BindToParent | Kind::BindToRoot => {
+                let ch = &self.chars[c];
+                let to = if ctrl.kind == Kind::BindToParent { ch.parent } else { ch.root };
+                if ch.helper && to != NOBODY && to != c {
+                    let pos = (self.pf(c, ctrl, "pos", 0, 0.0), self.pf(c, ctrl, "pos", 1, 0.0));
+                    let facing = self.pi(c, ctrl, "facing", 0, 0).signum();
+                    self.chars[c].bind = Some(Bind { to, pos, time: self.pi(c, ctrl, "time", 0, 1), facing });
+                }
+            }
             Kind::MoveHitReset => {
                 let ch = &mut self.chars[c];
                 ch.move_contact = 0;

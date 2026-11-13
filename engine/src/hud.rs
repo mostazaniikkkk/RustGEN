@@ -239,8 +239,14 @@ impl Game {
     fn start_round(&mut self, no: i32) {
         let matches = self.round.matches;
         let wins = self.round.wins;
-        self.round = Round { no, wins, matches, timer: 99 * self.fight.frames_per_count, ..Default::default() };
+        // Sin límite de tiempo el reloj se queda lleno y no se enseña.
+        let secs = if self.round_secs > 0 { self.round_secs } else { 99 };
+        self.round = Round { no, wins, matches, timer: secs * self.fight.frames_per_count, ..Default::default() };
         self.explods.clear();
+        // Los helpers y proyectiles no pasan de una ronda a otra.
+        self.chars.truncate(2);
+        self.projs.clear();
+        self.proj_log.clear();
         self.cam = [0.0, 0.0];
         self.pause = Default::default();
         self.shake = Default::default();
@@ -250,7 +256,7 @@ impl Game {
             ch.pos = [start.0, start.1];
             ch.vel = [0.0, 0.0];
             ch.facing = facing;
-            ch.life = ch.def.life;
+            ch.life = ch.life_max;
             ch.life_lag = ch.life as f32;
             ch.ctrl = false;
             ch.state_owner = c;
@@ -307,7 +313,7 @@ impl Game {
                 if pt >= announce_time + f.ctrl_time {
                     self.round.phase = Phase::Fight;
                     self.round.state = 2;
-                    for ch in self.chars.iter_mut() {
+                    for ch in self.chars.iter_mut().take(2) {
                         ch.ctrl = true;
                     }
                 }
@@ -315,15 +321,15 @@ impl Game {
             Phase::Fight => {
                 self.round.state = 2;
                 let freeze = self.chars.iter().any(|c| c.has(AS_TIMERFREEZE));
-                if self.round.timer > 0 && !freeze && !self.pause.on() {
+                if self.round.timer > 0 && !freeze && !self.pause.on() && self.round_secs > 0 {
                     self.round.timer -= 1;
                 }
                 if self.training {
                     // Entrenamiento: sin reloj, y la vida y el poder se reponen.
                     self.round.timer = 99 * f.frames_per_count;
-                    for ch in self.chars.iter_mut() {
+                    for ch in self.chars.iter_mut().take(2) {
                         if ch.movetype != b'h' {
-                            ch.life = ch.def.life;
+                            ch.life = ch.life_max;
                         }
                         ch.power = 3000;
                     }
@@ -371,19 +377,19 @@ impl Game {
                 self.round.over_time = pt;
                 let (waittime, wintime, over_time, win_time) = (f.over_waittime, f.over_wintime, f.over_time, f.win_time);
                 if pt == waittime {
-                    for ch in self.chars.iter_mut() {
+                    for ch in self.chars.iter_mut().take(2) {
                         ch.ctrl = false;
                     }
                 }
                 if self.round.win_started.is_none() && pt >= wintime {
                     // Espera a que todos estén quietos (o tirados) para las poses.
-                    let settled = self.chars.iter().all(|c| c.life <= 0 || (c.movetype == b'i' && c.stype == b's' && c.state_owner == c.idx))
-                        && self.chars.iter().all(|c| c.life > 0 || c.stateno == 5150 || c.stype == b'l');
+                    let settled = self.chars.iter().take(2).all(|c| c.life <= 0 || (c.movetype == b'i' && c.stype == b's' && c.state_owner == c.idx))
+                        && self.chars.iter().take(2).all(|c| c.life > 0 || c.stateno == 5150 || c.stype == b'l');
                     if settled || pt > wintime + 300 {
                         self.round.win_started = Some(pt);
                         self.round.state = 4;
                         self.round.match_over = self.round.wins.iter().any(|&w| w >= self.fight.match_wins);
-                        for c in 0..self.chars.len() {
+                        for c in 0..2 {
                             if self.chars[c].life <= 0 {
                                 continue;
                             }
@@ -419,7 +425,7 @@ impl Game {
         self.round.pt += 1;
 
         // Contador de golpes seguidos.
-        for c in 0..self.chars.len() {
+        for c in 0..2 {
             let combo = self.chars[c].combo;
             let r = &mut self.round;
             if combo >= 2 && combo != r.combo_shown[c] {
@@ -495,8 +501,8 @@ impl Game {
             return;
         }
         if self.show_bars && !self.chars.iter().any(|c| c.has(AS_NOBARDISPLAY)) {
-            for (i, ch) in self.chars.iter().enumerate() {
-                let max = ch.def.life.max(1) as f32;
+            for (i, ch) in self.chars.iter().enumerate().take(2) {
+                let max = ch.life_max.max(1) as f32;
                 self.draw_bar(frame, &f.life[i], ch.life as f32 / max, ch.life_lag / max);
                 let level = ch.power / 1000;
                 let frac = if ch.power >= 3000 { 1.0 } else { (ch.power % 1000) as f32 / 1000.0 };
@@ -536,8 +542,10 @@ impl Game {
                     self.hud_elem(frame, &f.icon_spr[i], ix + ox * k as f32, iy + oy * k as f32, self.tick, true, None);
                 }
             }
-            let secs = (r.timer + f.frames_per_count - 1) / f.frames_per_count;
-            self.hud_text(frame, &f.time, f.time_pos.0, f.time_pos.1, &format!("{:02}", secs.clamp(0, 99)));
+            if self.round_secs > 0 || self.training {
+                let secs = (r.timer + f.frames_per_count - 1) / f.frames_per_count;
+                self.hud_text(frame, &f.time, f.time_pos.0, f.time_pos.1, &format!("{:02}", secs.clamp(0, 99)));
+            }
         }
 
         // Combo.

@@ -1,0 +1,197 @@
+; Estados de prueba de helpers y proyectiles (ver kfmx.def).
+;
+; Variables del jugador que las pruebas miran:
+;   var(10)  ID del último ayudante creado (lo escribe él: ParentVarSet)
+;   var(11)  ticks que el ayudante ha pasado caminando (ParentVarAdd)
+;   var(12)  veces que el proyectil 7 ha golpeado
+;   var(13)  veces que el proyectil 7 ha sido bloqueado
+;   var(14)  estado del ayudante, leído con `helper(55), StateNo`
+;   var(15)  veces que el proyectil 7 ha sido anulado por otro
+
+;---------------------------------------------------------------------------
+; El estado -2 lo ejecutan también los helpers: de ahí los `!IsHelper`.
+[Statedef -2]
+
+[State -2, proyectil]
+type = ChangeState
+value = 7000
+triggerall = !IsHelper
+triggerall = command = "start" && command != "holddown"
+trigger1 = ctrl && statetype = S
+
+[State -2, ayudante]
+type = ChangeState
+value = 7100
+triggerall = !IsHelper
+triggerall = command = "start" && command = "holddown"
+trigger1 = ctrl && statetype != A
+
+[State -2, el proyectil golpeo]
+type = VarAdd
+triggerall = !IsHelper
+trigger1 = ProjHit7 = 1
+v = 12
+value = 1
+
+[State -2, el proyectil fue bloqueado]
+type = VarAdd
+triggerall = !IsHelper
+trigger1 = ProjGuarded7 = 1
+v = 13
+value = 1
+
+[State -2, el proyectil fue anulado]
+type = VarAdd
+triggerall = !IsHelper
+trigger1 = ProjCancelTime(7) = 0
+v = 15
+value = 1
+
+[State -2, que hace el ayudante]
+type = VarSet
+triggerall = !IsHelper
+trigger1 = NumHelper(55) > 0
+v = 14
+value = helper(55), StateNo
+
+[State -2, ayudante golpeado]
+type = DestroySelf
+trigger1 = IsHelper(55) && MoveType = H
+
+;---------------------------------------------------------------------------
+; Lanza un proyectil
+[Statedef 7000]
+type = S
+movetype = A
+physics = S
+anim = 200
+ctrl = 0
+velset = 0, 0
+
+[State 7000, proyectil]
+type = Projectile
+trigger1 = Time = 3
+projid = 7
+projanim = 200
+projremovetime = 150
+projpriority = 1
+projsprpriority = 3
+offset = 20, 0
+velocity = 3, 0
+attr = S, NP
+damage = 40, 5
+animtype = Light
+guardflag = MA
+pausetime = 0, 10
+sparkno = 0
+sparkxy = -10, -76
+hitsound = 5, 0
+guardsound = 6, 0
+ground.type = High
+ground.slidetime = 10
+ground.hittime = 12
+ground.velocity = -4
+air.velocity = -2, -3
+
+[State 7000, fin]
+type = ChangeState
+trigger1 = AnimTime = 0
+value = 0
+ctrl = 1
+
+;---------------------------------------------------------------------------
+; Llama al ayudante
+[Statedef 7100]
+type = S
+movetype = I
+physics = S
+anim = 195
+ctrl = 0
+velset = 0, 0
+
+[State 7100, ayudante]
+type = Helper
+triggerall = NumHelper(55) = 0
+trigger1 = Time = 2
+id = 55
+name = "Sombra"
+pos = 30, 0
+postype = p1
+stateno = 7200
+keyctrl = 0
+ownpal = 1
+size.xscale = 0.8
+size.yscale = 0.8
+
+[State 7100, fin]
+type = ChangeState
+trigger1 = Time = 20
+value = 0
+ctrl = 1
+
+;---------------------------------------------------------------------------
+; Ayudante: camina hacia el rival
+[Statedef 7200]
+type = S
+movetype = I
+physics = N
+anim = 20
+ctrl = 0
+velset = 2.5, 0
+
+[State 7200, quien soy]
+type = ParentVarSet
+trigger1 = Time = 0
+v = 10
+value = ID
+
+[State 7200, cuanto llevo]
+type = ParentVarAdd
+trigger1 = 1
+v = 11
+value = 1
+
+[State 7200, azulado]
+type = PalFx
+trigger1 = Time = 0
+time = 400
+add = 0, 0, 120
+
+[State 7200, golpear]
+type = ChangeState
+trigger1 = P2BodyDist X < 25
+trigger2 = Time > 90
+trigger3 = ParentDist X < -200
+value = 7210
+
+;---------------------------------------------------------------------------
+; Ayudante: golpea y se retira
+[Statedef 7210]
+type = S
+movetype = A
+physics = S
+anim = 210
+ctrl = 0
+velset = 0, 0
+
+[State 7210, golpe]
+type = HitDef
+trigger1 = Time = 0
+attr = S, NA
+damage = 30
+animtype = Medium
+guardflag = MA
+pausetime = 8, 8
+sparkno = 1
+sparkxy = -10, -70
+hitsound = 5, 1
+guardsound = 6, 0
+ground.type = High
+ground.slidetime = 10
+ground.hittime = 14
+ground.velocity = -5
+air.velocity = -2, -4
+
+[State 7210, fin]
+type = DestroySelf
+trigger1 = AnimTime = 0

@@ -1,6 +1,7 @@
 //! Evaluación de expresiones contra el estado de la pelea.
 
 use crate::expr::{Expr, Op, Redir, Trig, V, AT_CLASS, AT_STATE};
+use crate::ents::{PROJ_CANCEL, PROJ_GUARDED, PROJ_HIT};
 use crate::game::Game;
 use crate::gfx::{SCREEN_H, SCREEN_W};
 
@@ -197,9 +198,25 @@ impl Game {
         ((s >> 8) % 1000) as i32
     }
 
-    /// El rival del jugador `c`.
+    /// El jugador rival de `c` (que puede ser un jugador o un helper).
     pub fn enemy(&self, c: usize) -> usize {
-        1 - (c & 1)
+        1 - self.chars[c].team
+    }
+
+    /// El personaje al que apunta una redirección (`parent, …`), si existe.
+    fn redirect(&self, c: usize, r: Redir, arg: Option<i32>) -> Option<usize> {
+        let ch = &self.chars[c];
+        let alive = |i: usize| self.chars.get(i).is_some_and(|x| x.active);
+        match r {
+            Redir::Enemy | Redir::EnemyNear => Some(self.enemy(c)),
+            Redir::Root => Some(ch.root),
+            // En un jugador, `parent` es él mismo.
+            Redir::Parent => Some(ch.parent).filter(|&p| alive(p)),
+            Redir::Target => ch.targets.first().copied(),
+            Redir::Helper => self.helpers_of(c, arg.unwrap_or(0)).next(),
+            Redir::PlayerId => self.chars.iter().position(|x| x.active && Some(x.uid) == arg),
+            Redir::Partner => None,
+        }
     }
 
     pub fn eval_bool(&self, c: usize, e: &Expr) -> bool {
@@ -229,15 +246,9 @@ impl Game {
                 let inside = (if *lo_inc { v >= lo } else { v > lo }) && (if *hi_inc { v <= hi } else { v < hi });
                 V::I((inside != *neg) as i32)
             }
-            Expr::Redir(r, _arg, inner) => {
-                let ch = &self.chars[c];
-                let to = match r {
-                    Redir::Enemy | Redir::EnemyNear => Some(self.enemy(c)),
-                    Redir::Root | Redir::Parent => Some(c),
-                    Redir::Target => ch.targets.first().copied(),
-                    Redir::Partner | Redir::Helper | Redir::PlayerId => None,
-                };
-                to.map_or(V::I(0), |t| self.eval(t, inner))
+            Expr::Redir(r, arg, inner) => {
+                let arg = arg.as_ref().map(|a| self.eval(c, a).i());
+                self.redirect(c, *r, arg).map_or(V::I(0), |t| self.eval(t, inner))
             }
             Expr::Assign(kind, idx, val) => {
                 let (i, v) = (self.eval(c, idx).i(), self.eval(c, val));
@@ -332,8 +343,8 @@ impl Game {
             Trig::AnimExist | Trig::SelfAnimExist => b(ch.def.anims.contains_key(&arg(0).i())),
             Trig::Ctrl => b(ch.ctrl),
             Trig::Life => V::I(ch.life),
-            Trig::LifeMax => V::I(ch.def.life),
-            Trig::Power => V::I(ch.power),
+            Trig::LifeMax => V::I(ch.life_max),
+            Trig::Power => V::I(self.chars[ch.root].power),
             Trig::PowerMax => V::I(3000),
             Trig::Alive => b(ch.life > 0),
             Trig::Facing => V::I(ch.facing),
@@ -366,21 +377,46 @@ impl Game {
             }
             Trig::GameTime => V::I(self.tick),
             Trig::PalNo => V::I(ch.palno),
-            Trig::Win => b(self.round.winner == Some(c & 1)),
-            Trig::Lose => b(self.round.winner == Some(1 - (c & 1))),
+            Trig::Win => b(self.round.winner == Some(ch.team)),
+            Trig::Lose => b(self.round.winner == Some(1 - ch.team)),
             Trig::DrawGame => b(self.round.state >= 3 && self.round.decided && self.round.winner.is_none()),
             Trig::NumEnemy => V::I(1),
-            Trig::NumPartner | Trig::NumHelper | Trig::NumProj | Trig::IsHelper | Trig::AiLevel | Trig::Zero => V::I(0),
+            Trig::NumPartner | Trig::Zero => V::I(0),
+            // 0 si lo lleva una persona; si no, la dificultad elegida.
+            Trig::AiLevel => V::I(if self.chars[ch.root].ai { self.ai_level } else { 0 }),
+            // Sin identificador (o con 0 o menos) cuentan todos.
+            Trig::NumHelper => V::I(self.helpers_of(c, arg(0).i()).count() as i32),
+            Trig::IsHelper => b(ch.helper && (arg(0).i() <= 0 || ch.helper_id == arg(0).i())),
+            Trig::NumProj => V::I(self.count_projs(c, -1)),
+            Trig::NumProjId => V::I(if arg(0).i() < 0 { 0 } else { self.count_projs(c, arg(0).i()) }),
+            Trig::PlayerIdExist => b(self.chars.iter().any(|x| x.active && x.uid == arg(0).i())),
+            Trig::ProjContactTime | Trig::ProjHitTime | Trig::ProjGuardedTime | Trig::ProjCancelTime => {
+                let what = match t {
+                    Trig::ProjHitTime => PROJ_HIT,
+                    Trig::ProjGuardedTime => PROJ_GUARDED,
+                    Trig::ProjCancelTime => PROJ_CANCEL,
+                    _ => 3,
+                };
+                V::I(self.proj_time(c, arg(0).i(), what))
+            }
+            Trig::ParentDistX | Trig::ParentDistY | Trig::RootDistX | Trig::RootDistY => {
+                let r = if matches!(t, Trig::ParentDistX | Trig::ParentDistY) { Redir::Parent } else { Redir::Root };
+                match self.redirect(c, r, None) {
+                    Some(to) if matches!(t, Trig::ParentDistX | Trig::RootDistX) => V::F((self.chars[to].pos[0] - ch.pos[0]) * ch.facing as f32),
+                    Some(to) => V::F(self.chars[to].pos[1] - ch.pos[1]),
+                    None => V::F(0.0),
+                }
+            }
             Trig::NumExplod => {
                 let id = if args.is_empty() { -1 } else { arg(0).i() };
                 V::I(self.explods.iter().filter(|e| e.owner == c && (id < 0 || e.id == id)).count() as i32)
             }
             Trig::NumTarget => V::I(ch.targets.len() as i32),
-            Trig::Id => V::I(ch.idx as i32 + 56),
+            Trig::Id => V::I(ch.uid),
             Trig::Pi => V::F(3.141_592_7),
             Trig::E => V::F(2.718_281_7),
             Trig::TicksPerSecond => V::I(60),
-            Trig::TeamSide => V::I(ch.idx as i32 + 1),
+            Trig::TeamSide => V::I(ch.team as i32 + 1),
             Trig::VelX => V::F(ch.vel[0]),
             Trig::VelY => V::F(ch.vel[1]),
             Trig::PosX => V::F(ch.pos[0] - self.cam[0]),
@@ -458,15 +494,18 @@ impl Game {
         d - ch.width(true) - other.width(toward)
     }
 
-    /// ¿Está el rival atacando lo bastante cerca como para ponerse en guardia?
+    /// ¿Hay un ataque del otro bando (de un personaje o de un proyectil) lo
+    /// bastante cerca como para ponerse en guardia?
     pub fn in_guard_dist(&self, c: usize) -> bool {
         let ch = &self.chars[c];
-        let other = &self.chars[self.enemy(c)];
-        if other.movetype != b'a' {
-            return false;
-        }
-        let dist = other.hitdef.as_ref().and_then(|h| h.guard_dist).unwrap_or(other.def.attack_dist);
-        let d = (ch.pos[0] - other.pos[0]) * other.facing as f32;
-        d > -ch.width(true) && d - other.width(true) - ch.width(true) < dist
+        let near = self.chars.iter().any(|other| {
+            if !other.active || other.team == ch.team || other.movetype != b'a' {
+                return false;
+            }
+            let dist = other.hitdef.as_ref().and_then(|h| h.guard_dist).unwrap_or(other.def.attack_dist);
+            let d = (ch.pos[0] - other.pos[0]) * other.facing as f32;
+            d > -ch.width(true) && d - other.width(true) - ch.width(true) < dist
+        });
+        near || self.proj_in_guard_dist(c)
     }
 }

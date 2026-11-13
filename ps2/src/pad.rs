@@ -4,7 +4,6 @@
 //! EE unas 60 veces por segundo; leerlo no cuesta ninguna llamada.
 
 use crate::iop::{load_module, uncached, Aligned, Rpc};
-use mugen::cmd::*;
 
 const SID_PAD: u32 = 0x8000_010f;
 const SID_PAD_EXT: u32 = 0x8000_011f;
@@ -18,10 +17,12 @@ pub struct Pad {
 }
 
 impl Pad {
+    /// Hay que llamar antes a `card::init`.
     pub fn init() -> Pad {
         let mut pad = Pad { area: [std::ptr::null_mut(); 2], open: [false; 2] };
-        // SIO2MAN puede estar ya cargado (lo usa también la tarjeta de memoria).
-        let _ = std::os::ps2::load_iop_module("rom0:SIO2MAN");
+        // SIO2MAN, que también hace falta, lo comparten los mandos y la
+        // tarjeta de memoria y sólo se puede cargar una vez: ya lo cargó
+        // `card::init`.
         if !load_module("rom0:PADMAN") {
             return pad;
         }
@@ -87,26 +88,5 @@ impl Pad {
             // Bytes 2 y 3 de los datos: un bit por botón, 0 = pulsado.
             !(d.add(10).read_volatile() as u16 | (d.add(11).read_volatile() as u16) << 8)
         }
-    }
-
-    /// Teclas del motor: cruceta; cuadrado, triángulo y R1 = x, y, z;
-    /// equis, círculo y R2 = a, b, c; START = s; SELECT = botón de sistema.
-    pub fn keys(&self, port: usize) -> u16 {
-        let b = self.buttons(port);
-        let map = [
-            (0x0010, IN_UP),
-            (0x0040, IN_DOWN),
-            (0x0080, IN_LEFT),
-            (0x0020, IN_RIGHT),
-            (0x8000, IN_X),
-            (0x1000, IN_Y),
-            (0x0800, IN_Z),
-            (0x4000, IN_A),
-            (0x2000, IN_B),
-            (0x0200, IN_C),
-            (0x0008, IN_S),
-            (0x0001, IN_SELECT),
-        ];
-        map.iter().filter(|(bit, _)| b & bit != 0).fold(0, |k, (_, key)| k | key)
     }
 }

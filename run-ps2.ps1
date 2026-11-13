@@ -18,6 +18,8 @@ New-Item -ItemType Directory -Force $overlay | Out-Null
 if ($Mode -eq 'test') {
     Copy-Item $Config "$overlay\ps2test.cfg"
     Copy-Item tests\*.keys $overlay
+    # Los personajes de prueba, junto a los del juego.
+    Copy-Item -Recurse tests\chars $overlay
     cargo ps2 run -p mugen-ps2 --until 'prueba terminada' @Rest
 } else {
     cargo ps2 run -p mugen-ps2 --keep-open --timeout 100000 @Rest

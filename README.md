@@ -51,7 +51,7 @@ Compila el juego, con la carpeta `game/` empaquetada dentro del ELF, y abre PCSX
 | SELECT | Mostrar las cajas de colisión |
 | START + SELECT (medio segundo) | Salir de la pelea al título |
 
-En los menús: la cruceta mueve, cualquier botón acepta y SELECT vuelve atrás. En la
+Esos son los botones de fábrica: se cambian en el menú OPTIONS. En los menús: la cruceta mueve, cualquier botón acepta y SELECT vuelve atrás. En la
 selección, el botón con que eliges al personaje decide su paleta (cuadrado, triángulo,
 R1, equis, círculo y R2 son las paletas 1 a 6).
 
@@ -109,10 +109,16 @@ por personaje), uno contra otro en PCSX2 desde una ISO de 175 MB:
 |---|---|---|
 | ¿Arranca y pelea? | Sí, pelea idéntica a la del PC | Sí, pelea idéntica a la del PC |
 | Carga | 10 s de datos y 24 s de sonido | 15 s de datos y 58 s de sonido |
-| RAM libre en la pelea | 18,6 MB (caché de 1 MB) | 8,9 MB (caché de 4 MB por personaje) |
-| Tiempo medio por frame | 11 ms | 15,5 ms |
-| Frames que no llegan a tiempo | 154 de 1499; el peor, 218 ms | 175 de 1499; el peor, 291 ms |
+| Helpers en juego | — | 12 todo el rato (cada personaje mantiene 6 para sus efectos) |
+| RAM libre en la pelea | 18,6 MB (caché de 1 MB) | 8,1 MB (caché de 4 MB por personaje) |
+| Tiempo medio por frame | 11 ms | 31,9 ms |
+| Frames que no llegan a tiempo | 154 de 1499; el peor, 218 ms | 310 de 1499; el peor, 549 ms |
 | Sonido | Bajado a 11025 Hz | Bajado a 6000 Hz |
+
+La primera columna es de antes de que el motor tuviera helpers y proyectiles; la segunda,
+de después. Con ellos la pelea es la de verdad (los dos personajes crean helpers para sus
+efectos y lanzan proyectiles) y pesa el doble: antes de tenerlos, esa misma pelea daba
+15,5 ms de media y 175 frames tarde.
 
 No se cuelga ni se queda sin memoria, pero no va fluido: cada sprite nuevo hay que
 leerlo del disco y descomprimirlo (unos 60 ms), y eso es un tirón. Con una caché de
@@ -140,8 +146,31 @@ Los personajes y escenarios del juego se listan en
 | VS MODE | Dos jugadores (o contra la máquina sin segundo mando), con elección de escenario |
 | TRAINING | El rival no se mueve, no corre el reloj, y la vida y el poder se reponen |
 | WATCH | Máquina contra máquina |
+| OPTIONS | El menú de opciones (ver abajo) |
 
 Tras diez segundos sin tocar nada en el título empieza una pelea de demostración.
+
+### Opciones
+
+| Opción | Valores |
+|---|---|
+| Difficulty | 1 a 8: lo que se cubre la máquina y lo seguido que ataca. Los personajes la ven con el trigger `AILevel` |
+| Life | Vida inicial, del 30 % al 200 % |
+| Time Limit | Segundos de cada ronda (30 a 99) o `None`, sin límite |
+| Game Speed | De `Slow 9` a `Fast 9`; cada paso es un 5 % (de 33 a 87 ticks por segundo) |
+| Wav Volume | Volumen de los sonidos, de 0 a 100 % |
+| Player 1 / 2 Controls | Qué botón del mando hace cada función: se pulsan uno tras otro los once (arriba, abajo, izquierda, derecha, a, b, c, x, y, z y start). SELECT cancela |
+| Default Values | Lo deja todo como de fábrica |
+
+Izquierda y derecha cambian un valor; SELECT o `Return to Main Menu` salen. El menú se
+maneja siempre con los botones de fábrica, no con los que hayas elegido, para que una
+asignación equivocada se pueda deshacer.
+
+Al salir, si algo cambió, las opciones se guardan en la **tarjeta de memoria** de la
+ranura 1, en una carpeta `RUSTGEN` (unos 35 KB con su icono), y se leen al arrancar. Sin
+tarjeta, duran hasta apagar. Los valores de fábrica se fijan en
+[game/ps2.cfg](game/ps2.cfg), que es también lo que vale sin screenpack (ahí no hay
+menús).
 
 ## Estructura
 
@@ -151,7 +180,7 @@ Tras diez segundos sin tocar nada en el título empieza una pelea de demostraci�
 | [ps2/](ps2/src) | El programa de PS2: Graphics Synthesizer, mandos y sonido. Su `build.rs` empaqueta `game/` dentro del ELF |
 | [host/](host/src) | Herramienta de PC: ejecuta peleas sin ventana, guarda capturas PNG y genera la imagen de disco |
 | [game/](game) | Los datos: Kung Fu Man, su escenario, el marcador y las fuentes de MUGEN 1.1 |
-| [tests/](tests) | Guiones de teclas y configuraciones de prueba |
+| [tests/](tests) | Guiones de teclas, configuraciones de prueba y un personaje de prueba con helpers y proyectiles |
 | [docs/](docs/MUGEN_DOS_SPEC.md) | Notas sobre los formatos de MUGEN |
 
 ### El motor
@@ -160,15 +189,48 @@ Tras diez segundos sin tocar nada en el título empieza una pelea de demostraci�
 |---|---|
 | `sff`, `png`, `snd`, `fnt`, `air` | Formatos: SFF v1 (PCX) y v2 (RLE8, RLE5, LZ5 y PNG con paleta), con carga completa, bajo demanda o leída del disco, SND/WAV, fuentes FNT v1, animaciones AIR con cajas de colisión |
 | `cmd` | Comandos: direcciones, botones, `/` mantener, `~` soltar y cargar, `$`, `+`; ventana de tiempo y búfer |
-| `expr`, `eval` | Expresiones de CNS: enteros y reales, todos los operadores, intervalos, `:=`, redirecciones y unos 90 triggers |
-| `cns`, `ctrl` | Estados y más de 60 controladores: `HitDef`, `ChangeState`, `Explod`, `AfterImage`, `PalFX`, `SuperPause`, `TargetBind`, `ReversalDef`, `HitOverride`… |
+| `expr`, `eval` | Expresiones de CNS: enteros y reales, todos los operadores, intervalos, `:=`, redirecciones y unos 100 triggers |
+| `cns`, `ctrl` | Estados y más de 70 controladores: `HitDef`, `ChangeState`, `Explod`, `AfterImage`, `PalFX`, `SuperPause`, `TargetBind`, `ReversalDef`, `HitOverride`, `Helper`, `Projectile`… |
 | `game` | Máquina de estados, física, golpes y guardia, agarres con estados ajenos, malabares, empuje, cámara |
+| `ents` | Helpers y proyectiles |
 | `stage`, `bg`, `hud`, `fx` | Fondos (normales, parallax y animados), barras, retratos, reloj, combos, rondas y K.O., chispas, estelas, sombras y reflejos |
 | `motif`, `app`, `story` | Screenpack: `system.def` y `select.def`, las pantallas y el paso de una a otra, y los storyboards |
+| `options` | Opciones del juego y traducción de los botones del mando a las funciones del motor |
 | `ai` | Rival automático |
 | `gfx` | Lista de dibujo y un rasterizador por software de referencia |
 | `adpcm` | Codificador PS-ADPCM para el chip de sonido de la PS2 |
 | `vfs` | Lectura de archivos: del disco del PC, del paquete que va dentro del ELF o de un paquete en el disco de la consola |
+
+### Helpers y proyectiles
+
+Un **helper** es un personaje más, creado por un jugador (o por otro helper): tiene su
+estado, su animación, sus variables y sus cajas de colisión, usa los archivos de su
+jugador y puede golpear y ser golpeado. Un **proyectil** es más simple: una animación
+que avanza sola y lleva un golpe.
+
+| Qué | Admitido |
+|---|---|
+| `Helper` | `id`, `pos`, `postype` (`p1`, `p2`, `front`, `back`, `left`, `right`), `facing`, `stateno`, `keyctrl`, `ownpal`, `size.xscale`, `size.yscale`, `supermovetime`, `pausemovetime` |
+| Otros controladores | `DestroySelf`, `ParentVarSet`, `ParentVarAdd`, `BindToParent`, `BindToRoot` |
+| `Projectile` | `projid`, `projanim`, `projhitanim`, `projremanim`, `projcancelanim`, `projscale`, `projremove`, `projremovetime`, `velocity`, `remvelocity`, `accel`, `velmul`, `projhits`, `projmisstime`, `projpriority`, `projsprpriority`, `projedgebound`, `projstagebound`, `projheightbound`, `offset`, `postype`, `supermovetime`, `pausemovetime` y todos los parámetros de `HitDef` |
+| Triggers | `NumHelper`, `IsHelper`, `ID`, `PlayerIDExist`, `ParentDist`, `RootDist`, `NumProj`, `NumProjID`, `ProjHit`, `ProjContact`, `ProjGuarded` (con el identificador pegado y tiempo opcional: `ProjHit7 = 1, < 20`), `ProjHitTime`, `ProjContactTime`, `ProjGuardedTime`, `ProjCancelTime` |
+| Redirecciones | `parent`, `root`, `helper(id)`, `playerid(id)`, también dentro de un parámetro (`value = parent, var(3)`) |
+
+Cómo se comportan:
+
+- Un helper ejecuta el estado -2 siempre, el -1 sólo con `keyctrl = 1` y el -3 nunca.
+  Empieza a actuar en el tick siguiente al de su creación.
+- El poder y el contador de golpes son del jugador: lo que gana un helper o un proyectil
+  se lo lleva él.
+- Un helper no mueve la cámara ni choca con el borde de la pantalla si no lo pide
+  (`ScreenBound`), puede salirse del escenario y no cuenta para el final de la ronda.
+- Un proyectil golpea a jugadores y helpers del otro bando, se puede bloquear, y dos
+  proyectiles de bandos contrarios que se tocan se anulan según su prioridad.
+- Al empezar una ronda desaparecen todos. Hay un tope de 56 helpers y 64 proyectiles a
+  la vez, para que un personaje mal hecho no agote la memoria.
+
+[tests/chars/kfmx](tests/chars/kfmx/kfmx.cns) es un ejemplo corto: Kung Fu Man con un
+proyectil (Start) y un ayudante que camina, golpea y se retira (Abajo + Start).
 
 ### En la PS2
 
@@ -177,6 +239,11 @@ Tras diez segundos sin tocar nada en el título empieza una pelea de demostraci�
   1 KB. Las texturas se suben la primera vez que se usan y la caché se vacía cuando se
   llena. Las mezclas de MUGEN (suma, resta, alfa) salen del registro ALPHA del GS.
 - **Mandos** ([pad.rs](ps2/src/pad.rs)): módulos `SIO2MAN` y `PADMAN` de la BIOS.
+- **Tarjeta de memoria** ([card.rs](ps2/src/card.rs)): módulos `MCMAN` y `MCSERV` de la
+  BIOS, que carga la std al nombrar `mc0:`. Leer y listar se hace con `std::fs`; para
+  escribir hay un cliente propio del servidor de archivos de la BIOS, porque con esos
+  módulos la consulta "¿existe esta ruta?" que hace `std::fs` antes de crear nada
+  responde siempre que sí.
 - **Sonido** ([audio.rs](ps2/src/audio.rs)): los sonidos se codifican a PS-ADPCM al
   cargar, se suben a la memoria del SPU2 y cada uno suena en una de sus 24 voces.
   Necesita dos módulos de PS2SDK ([ps2/modules/](ps2/modules/README.md)), que van
@@ -189,7 +256,7 @@ IOP, y `std::os::ps2::reset_iop`, que reinicia el procesador de E/S.
 ## Verificación
 
 ```
-cargo test --release              # 26 pruebas, con los datos reales
+cargo test --release              # 42 pruebas, con los datos reales
 sh verify.sh                       # lo anterior + la PS2 contra el PC
 sh verify.sh --captura             # además, una captura de la ventana de PCSX2
 ```
@@ -203,6 +270,9 @@ jugadores (estado, animación, vida, poder y posición):
 | 720 ticks con un guion de teclas (caminar, golpes, salto, especial, carrera) | Idéntico, salvo una posición a 1 píxel por el redondeo de la FPU de la PS2 |
 | Screenpack por defecto: título, VS MODE, selección, versus y pelea | Mismas pantallas en los mismos ticks, y pelea idéntica |
 | Screenpack de Kung Fu Man: logo, intro, arcade, intro del personaje, versus y pelea | Ídem |
+| 960 ticks con helpers y proyectiles de los dos jugadores ([tests/chars/kfmx](tests/chars/kfmx/kfmx.def)) | Idéntico: mismos estados, vida y poder, y los mismos helpers y proyectiles en juego en cada tick |
+| Menú de opciones: cambiar los cinco valores, reasignar los botones del jugador 1 y jugar una pelea con todo ello | Mismas pantallas y valores en cada tick y pelea idéntica; lo guardado en la tarjeta de memoria es lo mismo que guarda el PC |
+| Segundo arranque tras guardar las opciones | Salen de la tarjeta de memoria: dificultad 6, vida 80 %, tiempo 90, velocidad 3, volumen 90 % |
 | Todos los sprites bajo demanda (umbral 0, caché de 256 KB), 3600 ticks | Pelea idéntica; 1,8 MB más de RAM libre (26,0 MB frente a 24,2) y el mismo tiempo por frame |
 | Arranque desde la imagen de disco (ISO), con los datos leídos de `GAME.PAK` | Mismas pantallas y pelea idéntica al PC; cargar una pelea desde el disco tarda 2,2 s |
 | Sonido | Las voces del SPU2 se leen de vuelta reproduciendo cada muestra con la envolvente al máximo |
@@ -242,11 +312,16 @@ PNG, `--log` imprime el estado y `--keys` reproduce un guion de teclas. Con
   funciona sin sonido.
 - **Discos grabados.** Una consola sólo arranca un disco grabado con chip o con un
   cargador; eso no depende del juego.
-- **Sin proyectiles ni helpers.** Kung Fu Man no los usa; los controladores `Projectile`
-  y `Helper` se aceptan y no hacen nada.
+- **De los helpers y proyectiles falta:** que un helper `helpertype = player` empuje a los
+  jugadores, que un `ReversalDef` devuelva un proyectil, los puntos de malabares de los
+  proyectiles, `projshadow`, y `ModifyExplod`. El orden de dibujo de un proyectil sólo
+  distingue delante o detrás de los personajes.
 - **Sin música.** Los escenarios piden MIDI o MP3.
-- **Del screenpack faltan** los modos por equipos y supervivencia, la pantalla de
-  opciones, la de "continuar" (al perder en arcade se vuelve al título) y el texto en
+- **De las opciones falta** el resto del menú de MUGEN (modos por equipos, volumen de la
+  música, configuración de teclado). El icono de la partida en el navegador de la consola
+  está hecho con el formato de los de otros juegos, pero no se ha visto dibujado.
+- **Del screenpack faltan** los modos por equipos y supervivencia, la pantalla
+  de "continuar" (al perder en arcade se vuelve al título) y el texto en
   storyboards. Las fuentes `.def` (FNT v2) se sustituyen por el `.fnt` del mismo nombre.
 - **Sólo screenpacks de 320×240 con sprites de 8 bits.** El de alta resolución de
   MUGEN 1.1 (`data/mugen1`) no se lee.
@@ -255,7 +330,8 @@ PNG, `--log` imprime el estado y `--keys` reproduce un guion de teclas. Con
   la PS2 los de más de 1024 píxeles por lado.
 - **Sin rotación ni escalado por controlador** (`AngleDraw`), ni prioridad de golpes:
   si dos ataques se cruzan, entran los dos.
-- Sólo se ha probado con Kung Fu Man y sus dos escenarios.
+- Sólo se ha probado con Kung Fu Man, sus dos escenarios y los dos personajes de la
+  prueba de estrés.
 
 ## Créditos y licencias
 

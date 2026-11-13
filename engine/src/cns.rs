@@ -75,6 +75,13 @@ pub enum Kind {
     MoveHitReset,
     Offset,
     Trans,
+    Helper,
+    Projectile,
+    DestroySelf,
+    ParentVarSet,
+    ParentVarAdd,
+    BindToParent,
+    BindToRoot,
     /// Controladores que este motor acepta sin hacer nada.
     Ignored,
 }
@@ -150,10 +157,16 @@ fn kind(name: &str) -> Option<Kind> {
         "movehitreset" => MoveHitReset,
         "offset" => Offset,
         "trans" => Trans,
+        "helper" => Helper,
+        "projectile" => Projectile,
+        "destroyself" => DestroySelf,
+        "parentvarset" => ParentVarSet,
+        "parentvaradd" => ParentVarAdd,
+        "bindtoparent" => BindToParent,
+        "bindtoroot" => BindToRoot,
         "forcefeedback" | "displaytoclipboard" | "appendtoclipboard" | "clearclipboard" | "angledraw" | "angleset" | "angleadd"
-        | "anglemul" | "victoryquote" | "sndpan" | "projectile" | "helper" | "destroyself" | "modifyexplod" | "explodbindtime"
-        | "bindtoparent" | "bindtoroot" | "parentvarset" | "parentvaradd" | "varrandom" | "zoom" | "modifybgctrl"
-        | "hitadd" | "tagin" | "tagout" => Ignored,
+        | "anglemul" | "victoryquote" | "sndpan" | "modifyexplod" | "explodbindtime" | "varrandom" | "zoom" | "modifybgctrl" | "hitadd"
+        | "tagin" | "tagout" => Ignored,
         _ => return None,
     })
 }
@@ -231,7 +244,7 @@ fn opt_expr(s: Option<&str>, warn: &mut Vec<String>, ctx: &str) -> Option<Expr> 
 }
 
 fn parse_param(value: &str, warn: &mut Vec<String>, ctx: &str) -> Param {
-    let exprs = expr::split_args(value).into_iter().map(|a| if a.is_empty() { None } else { expr::parse(a).ok() }).collect();
+    let exprs = expr::parse_list(value);
     let _ = (warn, ctx);
     Param { raw: value.trim().to_string(), exprs }
 }

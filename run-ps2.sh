@@ -16,6 +16,8 @@ if [ "$mode" = test ]; then
     shift
     cp "$cfg" target/ps2test/ps2test.cfg
     cp tests/*.keys target/ps2test/
+    # Los personajes de prueba, junto a los del juego.
+    cp -r tests/chars target/ps2test/
     exec cargo ps2 run -p mugen-ps2 --until "prueba terminada" "$@"
 fi
 exec cargo ps2 run -p mugen-ps2 --keep-open --timeout 100000 "$@"

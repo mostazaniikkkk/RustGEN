@@ -1,0 +1,20 @@
+; Personaje de prueba para helpers y proyectiles. Es Kung Fu Man (usa sus
+; archivos, sin copiarlos) con unos estados propios delante: kfmx.cns.
+;
+;   Start              lanza un proyectil (estado 7000)
+;   Abajo + Start      llama a un ayudante que camina, golpea y se va (7100)
+
+[Info]
+name = "Kung Fu Man X"
+displayname = "KFM X"
+author = "RustGen"
+
+[Files]
+cmd      = ../../../game/chars/kfm/kfm.cmd
+cns      = ../../../game/chars/kfm/kfm.cns
+st       = kfmx.cns
+st1      = ../../../game/chars/kfm/kfm.cns
+stcommon = common1.cns
+sprite   = ../../../game/chars/kfm/kfm.sff
+anim     = ../../../game/chars/kfm/kfm.air
+sound    = ../../../game/chars/kfm/kfm.snd

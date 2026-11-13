@@ -16,6 +16,8 @@ pub enum Mode {
     Versus,
     Training,
     Watch,
+    /// No es un modo de juego: la entrada OPTIONS del menú.
+    Options,
 }
 
 pub type SprNo = Option<(i32, i32)>;
@@ -181,6 +183,9 @@ pub struct Motif {
     pub credits: Option<String>,
     pub title: Title,
     pub title_bg: BgSet,
+    /// Pantalla de opciones: fondo y sonidos de mover, aceptar y cancelar.
+    pub option_bg: BgSet,
+    pub option_snd: [SndNo; 3],
     pub select: Select,
     pub select_bg: BgSet,
     pub vs: Versus,
@@ -240,6 +245,7 @@ impl Motif {
             (Mode::Versus, "versus", "VS MODE"),
             (Mode::Training, "training", "TRAINING"),
             (Mode::Watch, "watch", "WATCH"),
+            (Mode::Options, "options", "OPTIONS"),
         ] {
             let name = ti.str(&format!("menu.itemname.{key}")).unwrap_or_else(|| default.to_string());
             // Un nombre vacío quita la opción del menú.
@@ -349,6 +355,9 @@ impl Motif {
 
         // Los fondos pueden traer su propio SFF.
         let title_bg = BgSet::load(&secs, "titlebg", path, sff, sffs);
+        let option_bg = BgSet::load(&secs, "optionbg", path, sff, sffs);
+        let oi = sec("option info");
+        let option_snd = [snd_no(oi, "cursor.move.snd"), snd_no(oi, "cursor.done.snd"), snd_no(oi, "cancel.snd")];
         let select_bg = BgSet::load(&secs, "selectbg", path, sff, sffs);
         let vs_bg = BgSet::load(&secs, "versusbg", path, sff, sffs);
         let victory_bg = BgSet::load(&secs, "victorybg", path, sff, sffs);
@@ -367,6 +376,8 @@ impl Motif {
             credits: story(sec("end credits"), "storyboard", true),
             title,
             title_bg,
+            option_bg,
+            option_snd,
             select,
             select_bg,
             vs,

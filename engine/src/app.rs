@@ -10,6 +10,7 @@ use crate::cmd::*;
 use crate::game::Game;
 use crate::gfx::{Frame, PalRef, SoundCmd, SpriteCmd, Trans};
 use crate::motif::{Mode, Motif, Placed, Slot, SndNo, SprNo};
+use crate::options::{Options, PadLayout, FUNCS, FUNC_NAMES};
 use crate::sff::Sff;
 use crate::snd::Snd;
 use crate::story::{fade, Story};
@@ -29,6 +30,7 @@ enum Next {
     Arcade,
     Story(String, Box<Next>),
     WinText,
+    Options,
 }
 
 struct SelectState {
@@ -42,7 +44,24 @@ struct SelectState {
     wait: i32,
 }
 
+/// Entradas del menú de opciones: las cinco primeras son valores.
+const OPTION_ITEMS: [&str; 9] =
+    ["Difficulty", "Life", "Time Limit", "Game Speed", "Wav Volume", "Player 1 Controls", "Player 2 Controls", "Default Values", "Return to Main Menu"];
+const OPT_VALUES: usize = 5;
+const OPT_KEYS_P1: usize = 5;
+const OPT_DEFAULTS: usize = 7;
+const OPT_RETURN: usize = 8;
+
+struct OptionState {
+    sel: usize,
+    /// Asignando botones: jugador, función que toca y lo que había antes.
+    config: Option<(usize, usize, [u8; FUNCS])>,
+    /// Las opciones al entrar, para saber si hay que guardarlas.
+    entry: Options,
+}
+
 enum Screen {
+    Options(OptionState),
     Story(Story, Next),
     Title { sel: usize, idle: i32 },
     Select(SelectState),
@@ -85,6 +104,13 @@ pub struct App {
     select_alone: bool,
     pub pad2: bool,
     pub error: Option<String>,
+    options: Options,
+    layout: PadLayout,
+    /// Las opciones cambiaron en el menú y están sin guardar.
+    options_dirty: bool,
+    prev_raw: [u16; 2],
+    /// Fracción de tick pendiente cuando la velocidad no es la normal.
+    speed_acc: i32,
 }
 
 fn any(keys: u16) -> bool {
@@ -120,7 +146,44 @@ impl App {
             select_alone: false,
             pad2: false,
             error: None,
+            options: Options::new(&PadLayout::GENERIC),
+            layout: PadLayout::GENERIC,
+            options_dirty: false,
+            prev_raw: [0; 2],
+            speed_acc: 0,
         }
+    }
+
+    /// Dice qué mando tiene la plataforma. Las opciones vuelven a las de
+    /// fábrica de ese mando.
+    pub fn set_layout(&mut self, layout: PadLayout) {
+        self.layout = layout;
+        self.set_options(Options::new(&layout));
+    }
+
+    pub fn layout(&self) -> &PadLayout {
+        &self.layout
+    }
+
+    pub fn options(&self) -> &Options {
+        &self.options
+    }
+
+    /// Pone unas opciones (las guardadas, por ejemplo). Si hay una pelea en
+    /// marcha, vuelve a empezar con ellas.
+    pub fn set_options(&mut self, options: Options) {
+        let rules = |o: &Options| (o.life, o.time, o.difficulty);
+        let changed = rules(&options) != rules(&self.options);
+        self.options = options;
+        if let (true, Some(g)) = (changed, self.game.as_mut()) {
+            g.set_rules(self.options.life, self.options.time, self.options.difficulty);
+        }
+    }
+
+    /// Si las opciones cambiaron en el menú, las devuelve como texto para
+    /// que la plataforma las guarde (una sola vez por cambio).
+    pub fn take_options_to_save(&mut self) -> Option<String> {
+        std::mem::take(&mut self.options_dirty).then(|| self.options.to_text())
     }
 
     /// Sin screenpack: una pelea que se repite, como el primer MUGEN.
@@ -243,6 +306,11 @@ impl App {
                 self.demo = false;
                 self.screen = Screen::Title { sel: 0, idle: 0 };
             }
+            Next::Options => {
+                self.fadein = m.title.fadein;
+                self.drop_extras();
+                self.screen = Screen::Options(OptionState { sel: 0, config: None, entry: self.options.clone() });
+            }
             Next::Select => {
                 self.fadein = m.select.fadein;
                 // Un cursor que empezaría en una casilla vacía va a la primera ocupada.
@@ -271,6 +339,11 @@ impl App {
                 self.drop_extras();
                 match Game::load(&self.root, &fight, &p1, &p2, &stage, self.pals) {
                     Ok(mut g) => {
+                        // Con las opciones de fábrica la pelea queda como se cargó.
+                        let o = &self.options;
+                        if (o.life, o.time, o.difficulty) != (100, 99, 4) {
+                            g.set_rules(o.life, o.time, o.difficulty);
+                        }
                         g.auto_rematch = false;
                         g.training = self.mode == Mode::Training && !self.demo;
                         g.show_bars = !self.demo || bars;
@@ -355,9 +428,14 @@ impl App {
 
     // --------------------------------------------------------------- lógica
 
-    /// Avanza un tick. `keys[i]` son las teclas del jugador `i`.
-    pub fn tick(&mut self, keys: [u16; 2]) {
+    /// Avanza un tick. `raw[i]` son los botones del mando del jugador `i`,
+    /// un bit por botón, en el orden del [`PadLayout`] de la plataforma (con
+    /// el mando genérico, directamente las teclas `cmd::IN_*`).
+    pub fn tick(&mut self, raw: [u16; 2]) {
         self.sounds.clear();
+        let keys = [self.layout.map(&self.options.keys[0], raw[0]), self.layout.map(&self.options.keys[1], raw[1])];
+        let raw_pressed = [raw[0] & !self.prev_raw[0], raw[1] & !self.prev_raw[1]];
+        self.prev_raw = raw;
         let pressed = [keys[0] & !self.prev[0], keys[1] & !self.prev[1]];
         self.prev = keys;
         self.t += 1;
@@ -385,6 +463,7 @@ impl App {
                 }
             }
             Screen::Title { .. } => self.tick_title(pressed, accept),
+            Screen::Options(_) => self.tick_options(raw_pressed),
             Screen::Select(_) => self.tick_select(keys, pressed, back),
             Screen::Versus => {
                 let m = self.motif.as_ref().unwrap();
@@ -425,7 +504,23 @@ impl App {
                 _ => true,
             };
         }
-        g.tick(keys);
+        // Velocidad del juego: con la normal, un tick por frame. Más lento se
+        // salta alguno y más rápido da dos en algún frame.
+        self.speed_acc += self.options.ticks_per_second();
+        let mut sounds = Vec::new();
+        let mut ran = false;
+        while self.speed_acc >= 60 {
+            self.speed_acc -= 60;
+            // `tick` vacía la lista de sonidos: los del anterior se guardan.
+            sounds.append(&mut g.sounds);
+            g.tick(keys);
+            ran = true;
+        }
+        if ran {
+            g.sounds.splice(0..0, sounds);
+        } else {
+            g.sounds.clear();
+        }
 
         // SELECT solo: cajas de colisión. START + SELECT mantenidos: salir.
         let (sel, start) = (keys[0] & IN_SELECT != 0, keys[0] & IN_S != 0);
@@ -476,9 +571,14 @@ impl App {
             self.play(snd_move);
         }
         if accept && self.t > 5 {
-            self.mode = self.motif.as_ref().unwrap().title.items[sel].0;
+            let mode = self.motif.as_ref().unwrap().title.items[sel].0;
             self.play(snd_done);
-            self.leave(fadeout, Next::Select);
+            if mode == Mode::Options {
+                self.leave(fadeout, Next::Options);
+            } else {
+                self.mode = mode;
+                self.leave(fadeout, Next::Select);
+            }
         } else if demo && idle >= wait {
             // Modo demostración: una pelea entre dos personajes al azar.
             self.demo = true;
@@ -487,6 +587,78 @@ impl App {
             self.pals = [1, 2];
             self.stage = listed[self.rand(listed.len())];
             self.leave(fadeout, Next::Fight);
+        }
+    }
+
+    /// El menú de opciones. Se maneja con los botones de fábrica del mando,
+    /// no con los que haya elegido el jugador: así una asignación
+    /// equivocada siempre se puede deshacer.
+    fn tick_options(&mut self, raw_pressed: [u16; 2]) {
+        let m = self.motif.as_ref().unwrap();
+        let (fadeout, [snd_move, snd_done, snd_cancel]) = (m.title.fadeout, m.option_snd);
+        let layout = self.layout;
+        let nav = layout.map(&layout.default, raw_pressed[0] | raw_pressed[1]);
+        let (t, pad2) = (self.t, self.pad2);
+        let Screen::Options(st) = &mut self.screen else { return };
+        let mut sound = None;
+        let mut leave = false;
+
+        if let Some((p, step, old)) = st.config {
+            // Asignar botones: el siguiente que se pulse es el de la función
+            // que toca. Sin segundo mando, los del jugador 2 se eligen con el
+            // primero.
+            let r = raw_pressed[p] | if p == 1 && !pad2 { raw_pressed[0] } else { 0 };
+            if r & (1 << layout.select) != 0 {
+                self.options.keys[p] = old;
+                st.config = None;
+                sound = Some(snd_cancel);
+            } else if let Some(button) = (0..16u8).find(|&b| r & (1 << b) != 0 && !layout.name(b).is_empty()) {
+                self.options.keys[p][step] = button;
+                st.config = if step + 1 < FUNCS { Some((p, step + 1, old)) } else { None };
+                sound = Some(if step + 1 < FUNCS { snd_move } else { snd_done });
+            }
+        } else {
+            let n = OPTION_ITEMS.len();
+            if nav & IN_UP != 0 {
+                st.sel = (st.sel + n - 1) % n;
+                sound = Some(snd_move);
+            }
+            if nav & IN_DOWN != 0 {
+                st.sel = (st.sel + 1) % n;
+                sound = Some(snd_move);
+            }
+            let dir = (nav & IN_RIGHT != 0) as i32 - (nav & IN_LEFT != 0) as i32;
+            if dir != 0 && st.sel < OPT_VALUES && self.options.step(st.sel, dir) {
+                sound = Some(snd_move);
+            }
+            if any(nav) && t > 5 {
+                match st.sel {
+                    OPT_DEFAULTS => {
+                        self.options = Options::new(&layout);
+                        sound = Some(snd_done);
+                    }
+                    OPT_RETURN => leave = true,
+                    s if s >= OPT_KEYS_P1 => {
+                        let p = s - OPT_KEYS_P1;
+                        st.config = Some((p, 0, self.options.keys[p]));
+                        sound = Some(snd_done);
+                    }
+                    _ => {}
+                }
+            }
+            if nav & IN_SELECT != 0 {
+                leave = true;
+            }
+            if leave {
+                self.options_dirty |= self.options != st.entry;
+                sound = Some(snd_cancel);
+            }
+        }
+        if let Some(s) = sound {
+            self.play(s);
+        }
+        if leave {
+            self.leave(fadeout, Next::Title);
         }
     }
 
@@ -686,6 +858,51 @@ impl App {
         m.title_bg.draw(frame, &self.sffs, &m.anims, [0.0, 0.0], 0.0, self.t, 1);
     }
 
+    fn draw_options(&self, frame: &mut Frame, st: &OptionState) {
+        let m = self.motif.as_ref().unwrap();
+        frame.clear = m.option_bg.clear & 0x00ff_ffff;
+        m.option_bg.draw(frame, &self.sffs, &m.anims, [0.0, 0.0], 0.0, self.t, 0);
+        // Las fuentes del menú del título, alineadas a un lado o al otro.
+        let base = m.title.item_font;
+        let active = m.title.active_font.or(base);
+        let aligned = |f: Option<(usize, i32, i32)>, align: i32| f.map(|f| (f.0, f.1, align));
+        frame.rect(30, 22, 260, 196, 0xff00_0000, Trans::Add { src: 128, dst: 128 });
+        let pulse = (40 + (self.t % 32 - 16).abs() * 3) as u16;
+        let row = |frame: &mut Frame, y: f32, on: bool, left: &str, right: &str| {
+            if on {
+                frame.rect(36, y as i32 - 10, 248, 13, 0xffff_ffff, Trans::Add { src: pulse, dst: 256 });
+            }
+            let font = if on { active } else { base };
+            m.fonts.draw(frame, aligned(font, 1), 44.0, y, left);
+            m.fonts.draw(frame, aligned(font, -1), 276.0, y, right);
+        };
+        match st.config {
+            None => {
+                m.fonts.draw(frame, aligned(active, 0), 160.0, 40.0, "OPTIONS");
+                for (i, name) in OPTION_ITEMS.iter().enumerate() {
+                    // Un hueco separa los valores, los mandos y las dos acciones.
+                    let gap = (i >= OPT_VALUES) as i32 * 6 + (i >= OPT_DEFAULTS) as i32 * 6;
+                    let y = 64.0 + i as f32 * 15.0 + gap as f32;
+                    row(frame, y, i == st.sel, name, &self.options.value_text(i));
+                }
+            }
+            Some((p, step, _)) => {
+                m.fonts.draw(frame, aligned(active, 0), 160.0, 40.0, &format!("PLAYER {} CONTROLS", p + 1));
+                for (f, name) in FUNC_NAMES.iter().enumerate() {
+                    let y = 60.0 + f as f32 * 13.0;
+                    let button = if f == step {
+                        if self.t / 8 % 2 == 0 { "Press a button" } else { "" }
+                    } else {
+                        self.layout.name(self.options.keys[p][f])
+                    };
+                    row(frame, y, f == step, name, button);
+                }
+                m.fonts.draw(frame, aligned(base, 0), 160.0, 210.0, &format!("{}: cancel", self.layout.name(self.layout.select)));
+            }
+        }
+        m.option_bg.draw(frame, &self.sffs, &m.anims, [0.0, 0.0], 0.0, self.t, 1);
+    }
+
     fn mode_name(&self) -> &str {
         let m = self.motif.as_ref().unwrap();
         m.title.items.iter().find(|(mode, _)| *mode == self.mode).map_or("", |(_, n)| n.as_str())
@@ -795,6 +1012,7 @@ impl App {
                 match other {
                     Screen::Story(s, _) => s.draw(frame, &self.sffs),
                     Screen::Title { sel, .. } => self.draw_title(frame, *sel),
+                    Screen::Options(st) => self.draw_options(frame, st),
                     Screen::Select(st) => self.draw_select(frame, st),
                     Screen::Versus => self.draw_versus(frame),
                     Screen::Victory { winner, name, quote } => self.draw_victory(frame, *winner, name, quote),
@@ -807,6 +1025,13 @@ impl App {
                     Screen::Fight => {}
                 }
                 frame.sounds.extend(self.sounds.iter().copied());
+            }
+        }
+        // Volumen general.
+        if self.options.volume < 100 {
+            let vol = self.options.volume as f32 / 100.0;
+            for s in frame.sounds.iter_mut() {
+                s.vol *= vol;
             }
         }
         // Fundidos de entrada y de salida, en negro.
@@ -823,6 +1048,7 @@ impl App {
         match self.screen {
             Screen::Story(..) => "story",
             Screen::Title { .. } => "title",
+            Screen::Options(_) => "options",
             Screen::Select(_) => "select",
             Screen::Versus => "versus",
             Screen::Fight => "fight",
@@ -834,6 +1060,12 @@ impl App {
     pub fn summary(&self) -> String {
         match (&self.screen, &self.game) {
             (Screen::Fight, Some(g)) => g.summary(),
+            (Screen::Options(st), _) => {
+                // Lo elegido y, si se están asignando botones, por dónde va.
+                let o = &self.options;
+                let config = st.config.map_or(String::new(), |(p, step, _)| format!(" p{}:{}", p + 1, step));
+                format!("options t{} s{} d{} l{} c{} v{} w{}{}", self.t, st.sel, o.difficulty, o.life, o.time, o.speed, o.volume, config)
+            }
             _ => format!("{} t{}", self.screen_name(), self.t),
         }
     }

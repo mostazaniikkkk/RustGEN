@@ -20,6 +20,9 @@ ok $?
 
 step "Compilar la herramienta de PC y el juego para PS2"
 cargo build --release 2>&1 | grep -E '^(warning|error)' -A 6
+# Se borra el ELF anterior: si la compilación falla no debe quedar uno viejo
+# con el que las pruebas siguientes pasarían sin probar nada.
+rm -f target/ps2/mugen-ps2.elf
 cargo ps2 build -p mugen-ps2 2>&1 | grep -E 'R5900|ELF|^error' -A 6
 [ -f target/ps2/mugen-ps2.elf ] && [ -f target/release/mugen-host.exe ]
 ok $?
@@ -28,10 +31,11 @@ ok $?
 compare() {
     name="$1"; cfg="$2"; shift 2
     step "PS2 contra PC: $name"
+    rm -f "out/$name.ps2.log" target/ps2/mugen-ps2.elf
     sh run-ps2.sh test "$cfg" --timeout 400 --log "out/$name.ps2.log" >"out/$name.ps2.out" 2>&1
     grep -E 'frame:|audio: [0-9]|pad:' "out/$name.ps2.log" | sed 's/^/  /'
-    target/release/mugen-host.exe "$@" | grep '^t[0-9]' >"out/$name.pc.txt"
-    grep '^t[0-9]' "out/$name.ps2.log" >"out/$name.ps2.txt"
+    target/release/mugen-host.exe "$@" | grep -E '^(t[0-9]|options )' >"out/$name.pc.txt"
+    grep -E '^(t[0-9]|options )' "out/$name.ps2.log" >"out/$name.ps2.txt"
     n=$(wc -l <"out/$name.pc.txt")
     echo "  $n líneas de estado; última: $(tail -1 "out/$name.ps2.txt")"
     [ "$n" -gt 10 ] && python tests/compare.py "out/$name.pc.txt" "out/$name.ps2.txt"
@@ -42,12 +46,35 @@ compare keys720 tests/keys720.cfg run 720 --keys tests/p1.keys --log 20
 compare menu tests/menu.cfg run 1500 --motif data/system.def --keys tests/menu.keys --screens --log 50
 compare arcade tests/arcade.cfg run 2400 --motif data/kfm/system.def --keys tests/arcade.keys --ai1 --screens --log 100
 compare stream tests/stream.cfg run 3600 --ai1 --log 100
+kfmx=tests/chars/kfmx/kfmx.def
+compare helpers tests/helpers.cfg run 960 --p1 $kfmx --p2 $kfmx --keys tests/helpers.keys --log 2
+echo "  ticks con helpers: $(grep -c ' h[1-9]' out/helpers.ps2.txt); con proyectiles: $(grep -c ' p[1-9]' out/helpers.ps2.txt)"
+[ "$(grep -c ' h[1-9]' out/helpers.ps2.txt)" -gt 5 ] && [ "$(grep -c ' p[1-9]' out/helpers.ps2.txt)" -gt 2 ]
+ok $?
 grep -E 'bajo demanda|memoria libre' out/stream.ps2.log | tail -2 | sed 's/^/  /'
 echo "  sin carga bajo demanda: $(grep 'memoria libre' out/ai3600.ps2.log | tail -1)"
+
+# Menú de opciones. Escribe en la tarjeta de memoria de la ranura 1 de PCSX2
+# (una carpeta RUSTGEN) y al final la borra.
+rm -f out/options.pc.cfg
+compare options tests/options.cfg run 1400 --motif data/system.def --keys tests/options.keys --screens --log 10 --options out/options.pc.cfg
+step "Opciones guardadas en la tarjeta de memoria"
+grep '^tarjeta: [a-z]* = ' out/options.ps2.log | sed 's/^tarjeta: //' >out/options.card.txt
+head -5 out/options.pc.cfg >out/options.pc5.txt
+echo "  guardado en la PS2: $(paste -sd, out/options.card.txt)"
+grep -q 'opciones: guardadas' out/options.ps2.log && [ -s out/options.card.txt ] && cmp -s out/options.card.txt out/options.pc5.txt
+ok $?
+step "Segundo arranque: las opciones salen de la tarjeta de memoria"
+rm -f out/options2.ps2.log target/ps2/mugen-ps2.elf
+sh run-ps2.sh test tests/options2.cfg --timeout 200 --log out/options2.ps2.log >out/options2.ps2.out 2>&1
+grep -E '^opciones: (le|dificultad)|partida borrada' out/options2.ps2.log | sed 's/^/  /'
+grep -q 'opciones: dificultad 6, vida 80, tiempo 90, velocidad 3, volumen 90' out/options2.ps2.log && grep -q 'partida borrada: true' out/options2.ps2.log
+ok $?
 
 step "Arranque desde una imagen de disco (ISO), con los datos leídos del disco"
 rm -rf target/ps2test && mkdir -p target/ps2test
 cp tests/menu.cfg target/ps2test/ps2test.cfg && cp tests/*.keys target/ps2test/
+rm -f target/ps2/mugen-ps2.elf out/test.iso out/iso.ps2.log
 cargo ps2 build -p mugen-ps2 -- --features disc >out/iso.build.out 2>&1
 target/release/mugen-host.exe iso target/ps2/mugen-ps2.elf out/test.iso target/game.pak
 python tests/run-iso.py out/test.iso out/iso.ps2.log 300

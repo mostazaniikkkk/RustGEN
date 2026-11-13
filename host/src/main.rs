@@ -56,6 +56,7 @@ fn sheet(path: &str, out: &str, pal: Option<u16>) {
 /// `--motif data/system.def --pad2 --screens` (juego completo con screenpack),
 /// `--ai1 --noai2 --keys archivo --power n` (quién juega),
 /// `--stream KB` (umbral de carga de sprites bajo demanda),
+/// `--options archivo` (opciones: se leen de ahí y se guardan al cambiarlas),
 /// `--log n` (estado cada n ticks), `--shots a,b,c --every n --strip a:b:paso
 /// --out carpeta --clsn` (capturas PNG) y `--drawall` (dibuja cada tick).
 fn run(args: &[String]) {
@@ -81,6 +82,14 @@ fn run(args: &[String]) {
     }
     .expect("no pude cargar el juego");
     app.pad2 = flag("--pad2");
+    // --options archivo: las opciones se leen de ahí al empezar y se guardan
+    // ahí cuando cambian en el menú.
+    let options_file = opt("--options");
+    if let Some(text) = options_file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()) {
+        let mut o = app.options().clone();
+        o.apply_text(&text);
+        app.set_options(o);
+    }
     let mut before = 0;
     if let Some(g) = app.game.as_mut() {
         g.chars[0].ai = flag("--ai1");
@@ -113,6 +122,11 @@ fn run(args: &[String]) {
         if flag("--drawall") {
             app.draw(&mut frame);
             soft.render(&frame, app.sffs());
+        }
+        if let Some(text) = app.take_options_to_save() {
+            if let Some(f) = &options_file {
+                std::fs::write(f, &text).expect("no pude guardar las opciones");
+            }
         }
         if log > 0 && t % log == 0 {
             println!("{}", app.summary());

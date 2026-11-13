@@ -30,10 +30,17 @@ pub fn think(g: &mut Game, c: usize) {
     }
     let o = g.enemy(c);
     let dist = g.body_dist(c);
-    let enemy_attacking = g.chars[o].movetype == b'a';
+    let enemy_attacking = g.chars[o].movetype == b'a' || g.proj_in_guard_dist(c);
     let enemy_low = g.chars[o].stype == b'c';
     let enemy_down = g.chars[o].stype == b'l' || g.chars[o].life <= 0;
     let in_air = g.chars[c].stype == b'a';
+
+    // Dificultad: 4 es el comportamiento de referencia. Por encima se cubre
+    // más y deja menos tiempo entre un ataque y el siguiente; por debajo, al
+    // revés, y además a veces se queda quieta.
+    let level = g.ai_level;
+    let guard_chance = 150 + 100 * level;
+    let pace = (4 - level) * 3;
 
     let mut mem = std::mem::take(&mut g.chars[c].ai_mem);
     mem.timer -= 1;
@@ -41,7 +48,7 @@ pub fn think(g: &mut Game, c: usize) {
         let r = g.rand();
         let pick = |list: &[&str], r: i32| list[(r as usize / 7) % list.len()].to_string();
         mem.press = None;
-        if enemy_attacking && dist < 90.0 && r < 550 {
+        if enemy_attacking && dist < 90.0 && r < guard_chance {
             mem.plan = if enemy_low { Plan::CrouchGuard } else { Plan::Guard };
             mem.timer = 18;
         } else if enemy_down {
@@ -88,6 +95,11 @@ pub fn think(g: &mut Game, c: usize) {
                 800..=879 => (mem.plan, mem.timer) = (Plan::Back, 14),
                 880..=939 => (mem.plan, mem.timer) = (Plan::Guard, 16),
                 _ => {}
+            }
+            mem.timer = (mem.timer + pace).max(3);
+            if level < 4 && g.rand() < (4 - level) * 200 {
+                mem.plan = Plan::Idle;
+                mem.press = None;
             }
         }
     }

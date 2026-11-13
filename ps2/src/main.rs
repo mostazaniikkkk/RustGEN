@@ -7,6 +7,7 @@
 //! pelea.
 
 mod audio;
+mod card;
 mod gs;
 mod iop;
 mod pad;
@@ -14,6 +15,7 @@ mod pad;
 use mugen::app::App;
 use mugen::gfx::Frame;
 use mugen::ini::{self, Section};
+use mugen::options::{Options, PadLayout};
 use mugen::script::Script;
 use mugen::vfs;
 use std::time::Instant;
@@ -31,8 +33,14 @@ struct Test {
     hold: bool,
     nosound: bool,
     progressive: bool,
+    /// La prueba usa la tarjeta de memoria (las demás no la tocan, para no
+    /// depender de lo que haya guardado) y, al terminar, borra lo guardado.
+    card: bool,
+    card_clean: bool,
     /// Screenpack de la prueba; vacío = pelea directa.
     motif: String,
+    /// Personajes de la pelea directa, si la prueba los cambia.
+    players: [Option<String>; 2],
     /// Ajustes de carga bajo demanda que la prueba cambia.
     stream: std::collections::HashMap<String, i32>,
 }
@@ -47,8 +55,11 @@ fn load_test() -> Option<Test> {
         hold: s.i32("hold", 0) != 0,
         nosound: s.i32("nosound", 0) != 0,
         progressive: s.i32("progressive", 0) != 0,
+        card: s.i32("card", 0) != 0,
+        card_clean: s.i32("card.clean", 0) != 0,
         script: s.str("keys").and_then(|f| Script::load(&format!("game/{f}")).ok()),
         motif: s.str("motif").unwrap_or_default(),
+        players: [s.str("p1"), s.str("p2")].map(|p| p.filter(|v| !v.is_empty())),
         stream: ["stream", "stream.cache"].iter().filter(|k| s.get(k).is_some()).map(|k| (k.to_string(), s.i32(k, 0))).collect(),
     })
 }
@@ -106,7 +117,8 @@ fn main() {
         None => cfg.str("motif").unwrap_or_default(),
     };
     let loaded = if motif.is_empty() {
-        App::direct("game", &name("p1", "kfm"), &name("p2", "kfm"), &name("stage", "kfm"))
+        let player = |i: usize, key: &str| test.and_then(|t| t.players[i].clone()).unwrap_or_else(|| name(key, "kfm"));
+        App::direct("game", &player(0, "p1"), &player(1, "p2"), &name("stage", "kfm"))
     } else {
         App::with_motif("game", &motif)
     };
@@ -126,7 +138,34 @@ fn main() {
 
     let progressive = name("video", "448i").eq_ignore_ascii_case("240p") || test.is_some_and(|t| t.progressive);
     let mut gs = gs::Gs::init(if progressive { gs::VideoMode::Progressive } else { gs::VideoMode::Interlaced });
+    // La tarjeta de memoria primero: sus módulos traen el SIO2MAN que
+    // también necesitan los mandos.
+    card::init();
     let pad = pad::Pad::init();
+
+    // Opciones: las de fábrica del mando, encima las de ps2.cfg y encima las
+    // guardadas en la tarjeta de memoria.
+    let layout = PadLayout::PS2;
+    app.set_layout(layout);
+    let use_card = test.map_or(true, |t| t.card);
+    let mut options = Options::new(&layout);
+    if let Ok(text) = ini::read_text("game/ps2.cfg") {
+        options.apply_text(&text);
+    }
+    if use_card {
+        match card::load() {
+            Some(text) => {
+                options.apply_text(&text);
+                println!("opciones: leídas de la tarjeta de memoria");
+            }
+            None => println!("opciones: no hay nada guardado en la tarjeta de memoria"),
+        }
+    }
+    println!(
+        "opciones: dificultad {}, vida {}, tiempo {}, velocidad {}, volumen {}",
+        options.difficulty, options.life, options.time, options.speed, options.volume
+    );
+    app.set_options(options);
     let mut iop = iop::Iop::init();
     let mut audio = audio::Audio::init(iop.as_mut());
     let nosound = test.is_some_and(|t| t.nosound);
@@ -140,9 +179,11 @@ fn main() {
     // Tiempos por frame, sin contar los frames en que se carga algo.
     let (mut worst, mut total, mut frames, mut slow, mut load_ms) = (0u32, 0u64, 0u64, 0u32, 0u64);
     loop {
+        // Botones de cada mando. Un guion de prueba habla de funciones (a,
+        // b, arriba…): se pasan a los botones que las hacen de fábrica.
         let keys = match test.and_then(|t| t.script.as_ref()) {
-            Some(s) => s.keys(tick),
-            None => [pad.keys(0), pad.keys(1)],
+            Some(s) => s.keys(tick).map(|k| layout.raw_from_keys(k)),
+            None => [pad.buttons(0), pad.buttons(1)],
         };
         // Sin segundo mando, al jugador 2 lo lleva la máquina.
         app.pad2 = pad.connected(1) && test.is_none();
@@ -159,6 +200,15 @@ fn main() {
         if !held {
             app.tick(keys);
             app.draw(&mut frame);
+        }
+        // Al salir del menú de opciones con cambios, se guardan.
+        if let Some(text) = app.take_options_to_save() {
+            if use_card {
+                match card::save(&text) {
+                    Ok(()) => println!("opciones: guardadas en la tarjeta de memoria"),
+                    Err(e) => println!("opciones: no se pudieron guardar ({e})"),
+                }
+            }
         }
         // Al cambiar de pantalla cambian los sprites y los sonidos.
         let loading = app.epoch() != epoch;
@@ -212,6 +262,19 @@ fn main() {
                 let streamed: Vec<_> = app.sffs().iter().filter(|s| s.is_streamed()).collect();
                 let (decodes, cached) = streamed.iter().map(|s| s.cache_stats()).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
                 println!("sprites bajo demanda: {} de {} SFF; {decodes} descompresiones, {} KB en caché", streamed.len(), app.sffs().len(), cached / 1024);
+                if t.card {
+                    // Lo que quedó de verdad en la tarjeta, sin los botones
+                    // (cada plataforma tiene los suyos).
+                    for line in card::load().unwrap_or_default().lines().filter(|l| !l.starts_with('p')) {
+                        println!("tarjeta: {line}");
+                    }
+                    for entry in card::list() {
+                        println!("tarjeta: contiene {entry}");
+                    }
+                    if t.card_clean {
+                        println!("tarjeta: partida borrada: {}", card::remove());
+                    }
+                }
                 println!("prueba terminada");
                 held = t.hold;
                 if !held {

@@ -1,0 +1,60 @@
+; Menú de opciones: título -> OPTIONS, cambiar dificultad, vida, tiempo,
+; velocidad y volumen, reasignar los botones del jugador 1 (a y b
+; intercambiados), volver, y jugar una pelea en VS MODE con todo eso.
+60 1 D 2
+70 1 D 2
+80 1 D 2
+90 1 D 2
+100 1 x 2
+; Dificultad 6
+140 1 R 2
+150 1 R 2
+; Vida 80 %
+160 1 D 2
+170 1 L 2
+180 1 L 2
+; Tiempo 90
+190 1 D 2
+200 1 L 2
+; Velocidad: Fast 3
+210 1 D 2
+220 1 R 2
+230 1 R 2
+240 1 R 2
+; Volumen 90 %
+250 1 D 2
+260 1 L 2
+; Botones del jugador 1
+270 1 D 2
+280 1 x 2
+300 1 U 2
+310 1 D 2
+320 1 L 2
+330 1 R 2
+340 1 b 2
+350 1 a 2
+360 1 c 2
+370 1 x 2
+380 1 y 2
+390 1 z 2
+400 1 s 2
+; Volver al título (se guardan)
+420 1 D 2
+430 1 D 2
+440 1 D 2
+450 1 x 2
+; VS MODE, personajes y escenario
+500 1 D 2
+520 1 x 2
+580 1 x 2
+620 1 R 2
+640 1 y 2
+680 1 R 2
+700 1 a 2
+; En la pelea: el botón b da ahora la patada floja (a) y el a la fuerte (b)
+1150 1 R 30
+1190 1 b 2
+1230 1 a 2
+1270 1 x 2
+1310 1 D 20
+1320 1 Db 2

@@ -362,7 +362,8 @@ fn motif_loads_roster_and_stages() {
     assert!(m.chars[0].portraits[0].is_some() && m.chars[0].portraits[1].is_some());
     assert_eq!(m.slots.len(), 2);
     assert_eq!(m.listed_stages().len(), 2);
-    assert_eq!(m.title.items.len(), 4);
+    // ARCADE, VS MODE, TRAINING, WATCH y OPTIONS.
+    assert_eq!(m.title.items.len(), 5);
     assert_eq!(app.screen_name(), "title");
 }
 
@@ -452,4 +453,436 @@ fn two_pads_select_at_the_same_time_and_demo_mode_starts() {
     let mut app = App::with_motif(ROOT, "data/system.def").unwrap();
     let seen = screens(&mut app, &Script::parse(""), 2300);
     assert_eq!(seen, vec!["title", "fight", "title"]);
+}
+
+// ------------------------------------------------- helpers y proyectiles
+
+/// Kung Fu Man con estados de prueba: `Start` lanza un proyectil y
+/// `Abajo + Start` llama a un ayudante (ver `tests/chars/kfmx`).
+const KFMX: &str = "../tests/chars/kfmx/kfmx.def";
+
+fn game_x(p2: &str) -> Game {
+    let mut g = Game::new(ROOT, KFMX, p2, "kfm").expect("no se pudo cargar la pelea de prueba");
+    assert!(g.warnings.is_empty(), "{:#?}", g.warnings);
+    g.chars[0].ai = false;
+    g.chars[1].ai = false;
+    g
+}
+
+fn var(g: &Game, c: usize, i: usize) -> i32 {
+    g.chars[c].ivar[i].get()
+}
+
+#[test]
+fn helper_and_projectile_triggers_parse() {
+    for src in [
+        "ProjHit1234 = 1",
+        "ProjContact = 1, < 20",
+        "ProjGuarded7 = 0, >= 3",
+        "!ProjContact5",
+        "ProjHitTime(7) = [0, 10]",
+        "NumHelper(55) = 0 && NumProjID(7) < 2 && NumProj = 0",
+        "IsHelper && !IsHelper(3)",
+        "parent, var(3) > 0",
+        "root, StateNo = 200",
+        "helper(55), Pos X > 0",
+        "playerid(57), life",
+        "PlayerIDExist(ID)",
+        "ParentDist X < 20 && RootDist Y = 0",
+        "ifelse(ProjHit7 = 1, 3, 4)",
+    ] {
+        expr::parse(src).unwrap_or_else(|e| panic!("`{src}`: {e}"));
+    }
+}
+
+#[test]
+fn projectile_flies_hits_and_reports() {
+    let mut g = game_x("kfm");
+    let script = Script::parse("200 1 s 2");
+    let (mut max_projs, mut front, mut guard) = (0, 0.0f32, false);
+    let mut p2 = Vec::new();
+    for t in 0..330 {
+        g.tick(script.keys(t));
+        max_projs = max_projs.max(g.projs.len());
+        if let Some(p) = g.projs.first() {
+            front = front.max(p.pos[0]);
+            assert_eq!(g.count_projs(0, 7), 1);
+            assert_eq!(g.count_projs(0, 8), 0);
+            // Los proyectiles son del jugador 1: el 2 no tiene ninguno.
+            assert_eq!(g.count_projs(1, -1), 0);
+        }
+        guard |= g.in_guard_dist(1);
+        if p2.last() != Some(&g.chars[1].stateno) {
+            p2.push(g.chars[1].stateno);
+        }
+    }
+    assert_eq!(max_projs, 1);
+    // Salió de delante del jugador 1 (x = -70) y avanzó hacia el 2.
+    assert!(front > -20.0, "el proyectil llegó hasta x = {front}");
+    assert!(guard, "el rival nunca estuvo a distancia de guardia del proyectil");
+    assert!(g.projs.is_empty(), "el proyectil sigue en juego");
+    // 40 de daño, el rival pasó por el estado de golpeado y el jugador se
+    // enteró (ProjHit7) y ganó poder sin moverse de su sitio.
+    assert_eq!(g.chars[1].life, 960);
+    assert!(p2.contains(&5000), "{p2:?}");
+    assert_eq!(var(&g, 0, 12), 1);
+    assert_eq!(var(&g, 0, 13), 0);
+    assert_eq!(g.chars[0].power, 28);
+    assert_eq!(g.chars[0].pos[0], -70.0);
+    assert_eq!(g.chars[0].stateno, 0);
+    assert!(g.chars[0].targets.is_empty());
+    assert_eq!(g.proj_time(0, 7, mugen::ents::PROJ_GUARDED), -1);
+    assert!(g.proj_time(0, 7, mugen::ents::PROJ_HIT) > 30);
+}
+
+#[test]
+fn projectile_can_be_guarded() {
+    let mut g = game_x("kfm");
+    // El jugador 2 mira a la izquierda: "atrás" es la derecha.
+    let script = Script::parse("200 1 s 2\n205 2 R 120");
+    let [_, p2] = run(&mut g, &script, 330);
+    assert!(p2.contains(&120) && p2.contains(&150), "{p2:?}");
+    assert_eq!(g.chars[1].life, 995);
+    assert_eq!((var(&g, 0, 12), var(&g, 0, 13)), (0, 1));
+    assert!(g.projs.is_empty());
+}
+
+#[test]
+fn projectile_leaves_when_its_time_runs_out() {
+    let mut g = game_x("kfm");
+    let script = Script::parse("200 1 s 2");
+    // Con el rival fuera de su alcance sólo lo retira su tiempo (150 ticks)
+    // o salirse de la pantalla.
+    let mut alive = 0;
+    for t in 0..420 {
+        if t >= 200 {
+            g.chars[1].pos = [150.0, -200.0];
+            g.chars[1].vel = [0.0, 0.0];
+        }
+        g.tick(script.keys(t));
+        alive += g.projs.len();
+    }
+    assert!(g.projs.is_empty());
+    assert!((30..=150).contains(&alive), "el proyectil vivió {alive} ticks");
+    assert_eq!(g.chars[1].life, 1000);
+    assert_eq!(var(&g, 0, 12), 0);
+}
+
+#[test]
+fn projectiles_of_both_sides_cancel_each_other() {
+    let mut g = game_x(KFMX);
+    let script = Script::parse("200 1 s 2\n200 2 s 2");
+    let mut max_projs = 0;
+    for t in 0..330 {
+        g.tick(script.keys(t));
+        max_projs = max_projs.max(g.projs.len());
+    }
+    assert_eq!(max_projs, 2);
+    assert!(g.projs.is_empty());
+    // Misma prioridad: se anulan los dos y nadie recibe daño.
+    assert_eq!((g.chars[0].life, g.chars[1].life), (1000, 1000));
+    assert_eq!((var(&g, 0, 15), var(&g, 1, 15)), (1, 1));
+    assert_eq!((var(&g, 0, 12), var(&g, 1, 12)), (0, 0));
+}
+
+#[test]
+fn helper_walks_hits_and_destroys_itself() {
+    let mut g = game_x("kfm");
+    let script = Script::parse("200 1 D 12\n204 1 s 2\n420 1 D 12\n424 1 s 2");
+    let mut states = Vec::new();
+    let (mut seen, mut first_uid, mut frame, mut soft) = (0, 0, Frame::default(), Soft::new());
+    for t in 0..400 {
+        g.tick(script.keys(t));
+        if let Some(h) = g.chars.get(2).filter(|h| h.active) {
+            seen += 1;
+            first_uid = h.uid;
+            assert!(h.helper && h.helper_id == 55 && h.parent == 0 && h.root == 0 && h.team == 0);
+            assert_eq!(h.scale, (0.8, 0.8));
+            assert_eq!(g.helpers_of(0, 55).count(), 1);
+            assert_eq!(g.helpers_of(0, 3).count(), 0);
+            assert_eq!(g.helpers_of(1, 0).count(), 0);
+            if states.last() != Some(&h.stateno) {
+                states.push(h.stateno);
+            }
+            // El jugador sigue al ayudante con `helper(55), StateNo` (lo lee
+            // antes de que el ayudante actúe: va un tick por detrás).
+            if seen > 2 {
+                assert!(states.contains(&var(&g, 0, 14)), "var(14) = {}", var(&g, 0, 14));
+            }
+            // Se dibuja (con su sombra) sin estorbar a nadie.
+            g.draw(&mut frame);
+            soft.render(&frame, &g.sffs);
+        }
+        assert!(g.chars.len() <= 3);
+    }
+    assert_eq!(states, vec![7200, 7210]);
+    assert!(seen > 20, "el ayudante vivió {seen} ticks");
+    // Se identificó ante su creador y le fue contando el tiempo.
+    assert_eq!(var(&g, 0, 10), first_uid);
+    assert!(first_uid >= 58);
+    assert!(var(&g, 0, 11) > 10);
+    // Golpeó (30 de daño, a nombre del jugador) y se retiró.
+    assert_eq!(g.chars[1].life, 970);
+    assert_eq!(g.chars[0].power, 21);
+    assert!(g.chars.iter().all(|c| !c.helper || !c.active));
+    assert_eq!(g.helpers_of(0, 0).count(), 0);
+    assert!(g.chars[0].targets.is_empty() && g.chars[1].bind.is_none());
+
+    // El segundo ayudante ocupa el hueco del primero, con otro ID.
+    for t in 400..470 {
+        g.tick(script.keys(t));
+    }
+    assert_eq!(g.chars.len(), 3);
+    assert!(g.chars[2].active && g.chars[2].uid > first_uid);
+    // Una ronda nueva empieza sin ayudantes ni proyectiles.
+    g.start_match();
+    assert_eq!(g.chars.len(), 2);
+    assert!(g.projs.is_empty());
+}
+
+#[test]
+fn a_hit_helper_destroys_itself_and_the_fight_goes_on() {
+    let mut g = game_x("kfm");
+    // El jugador 2 recibe al ayudante a patadas.
+    let script = Script::parse("200 1 D 12\n204 1 s 2\n222 2 b 2\n232 2 b 2\n242 2 b 2\n252 2 b 2\n262 2 b 2");
+    let (mut helper_ticks, mut was_hit) = (0, false);
+    for t in 0..520 {
+        g.tick(script.keys(t));
+        helper_ticks += g.chars.iter().filter(|c| c.active && c.helper).count();
+        was_hit |= g.chars.iter().any(|c| c.active && c.helper && c.movetype == b'h');
+    }
+    assert!(helper_ticks > 0);
+    assert!(was_hit, "el ayudante no llegó a recibir el golpe");
+    assert_eq!(g.chars[1].life, 1000);
+    assert!(g.chars.iter().all(|c| !c.helper || !c.active));
+    // Nadie se quedó colgado apuntando al ayudante desaparecido.
+    for c in 0..2 {
+        assert_eq!(g.chars[c].stateno, 0, "jugador {c}");
+        assert_eq!(g.chars[c].state_owner, c);
+        assert!(g.chars[c].targets.is_empty());
+    }
+    assert_eq!(g.round.state, 2);
+}
+
+#[test]
+fn helpers_and_projectiles_are_deterministic() {
+    let script = Script::parse("200 1 s 2\n260 1 D 12\n264 1 s 2\n300 2 s 2\n380 1 s 2\n381 2 D 12\n385 2 s 2");
+    let play = || {
+        let mut g = game_x(KFMX);
+        let mut log = Vec::new();
+        for t in 0..900 {
+            if t == 450 {
+                g.chars[1].ai = true;
+            }
+            g.tick(script.keys(t));
+            log.push(g.summary());
+        }
+        log
+    };
+    let (a, b) = (play(), play());
+    assert_eq!(a, b);
+    assert!(a.iter().any(|l| l.contains(" h1 ")), "nunca hubo un ayudante");
+    assert!(a.iter().any(|l| l.ends_with("p1") || l.ends_with("p2")), "nunca hubo un proyectil");
+}
+
+// ------------------------------------------------------------- opciones
+
+use mugen::options::{Options, PadLayout};
+
+#[test]
+fn options_menu_changes_rules_controls_and_speed() {
+    let mut app = App::with_motif(ROOT, "data/system.def").unwrap();
+    let script = Script::load("../tests/options.keys").unwrap();
+    let mut seen = Vec::new();
+    let mut saved = Vec::new();
+    let mut frame = Frame::default();
+    let (mut fight_frames, mut p1) = (0, Vec::new());
+    for t in 0..1400 {
+        app.tick(script.keys(t));
+        app.draw(&mut frame);
+        saved.extend(app.take_options_to_save());
+        if seen.last() != Some(&app.screen_name()) {
+            seen.push(app.screen_name());
+        }
+        if let ("fight", Some(g)) = (app.screen_name(), app.game.as_ref()) {
+            fight_frames += 1;
+            if p1.last() != Some(&g.chars[0].stateno) {
+                p1.push(g.chars[0].stateno);
+            }
+        }
+    }
+    assert_eq!(seen, vec!["title", "options", "title", "select", "versus", "fight"]);
+    let o = app.options().clone();
+    assert_eq!((o.difficulty, o.life, o.time, o.speed, o.volume), (6, 80, 90, 3, 90));
+    // Los botones a y b del jugador 1 quedaron intercambiados; el 2, intacto.
+    assert_eq!(o.keys[0], [0, 1, 2, 3, 5, 4, 6, 7, 8, 9, 10]);
+    assert_eq!(o.keys[1], PadLayout::GENERIC.default);
+    // Se pidió guardar una sola vez, al salir del menú, con lo elegido.
+    assert_eq!(saved.len(), 1);
+    let mut back = Options::new(&PadLayout::GENERIC);
+    back.apply_text(&saved[0]);
+    assert_eq!(back, o);
+
+    let g = app.game.as_ref().unwrap();
+    // Vida al 80 %, reloj de 90 segundos y dificultad 6.
+    assert_eq!((g.chars[0].life_max, g.chars[1].life_max), (800, 800));
+    assert!(g.chars[0].life <= 800);
+    assert_eq!((g.round_secs, g.ai_level), (90, 6));
+    // Velocidad "Fast 3": 69 ticks de pelea por cada 60 frames.
+    let expected = fight_frames * 69 / 60;
+    assert!((g.tick - expected).abs() <= 2, "{} ticks en {fight_frames} frames", g.tick);
+    // El botón b da la patada floja (estado 230) y el a la fuerte (240).
+    let (weak, strong) = (p1.iter().position(|&s| s == 230), p1.iter().position(|&s| s == 240));
+    assert!(weak.is_some() && strong.is_some() && weak < strong, "{p1:?}");
+    // El volumen baja todo lo que suena.
+    assert!(frame.sounds.iter().all(|s| s.vol <= 0.9001));
+}
+
+#[test]
+fn options_defaults_cancel_and_other_screenpack() {
+    let mut app = App::with_motif(ROOT, "data/kfm/system.def").unwrap();
+    let mut frame = Frame::default();
+    // Espera al título (este screenpack tiene logo e intro) y entra en OPTIONS.
+    let mut step = |app: &mut App, keys: &str, n: i32| {
+        for i in 0..n {
+            app.tick([if i < 2 { parse_keys(keys) } else { 0 }, 0]);
+            app.draw(&mut frame);
+        }
+    };
+    for _ in 0..1000 {
+        if app.screen_name() == "title" {
+            break;
+        }
+        step(&mut app, "x", 4);
+    }
+    assert_eq!(app.screen_name(), "title");
+    step(&mut app, "", 40);
+    let items = app.motif.as_ref().unwrap().title.items.len();
+    for _ in 0..items - 1 {
+        step(&mut app, "D", 6);
+    }
+    step(&mut app, "x", 40);
+    assert_eq!(app.screen_name(), "options");
+    // Cambia la dificultad y empieza a asignar botones del jugador 2…
+    step(&mut app, "L", 6);
+    assert_eq!(app.options().difficulty, 3);
+    for _ in 0..6 {
+        step(&mut app, "D", 6);
+    }
+    step(&mut app, "x", 6);
+    step(&mut app, "z", 6);
+    step(&mut app, "z", 6);
+    assert_eq!(app.options().keys[1][..2], [9, 9]);
+    assert!(app.summary().ends_with("p2:2"), "{}", app.summary());
+    // …y lo cancela con SELECT: los botones vuelven a como estaban.
+    app.tick([IN_SELECT, 0]);
+    step(&mut app, "", 6);
+    assert_eq!(app.options().keys[1], PadLayout::GENERIC.default);
+    assert_eq!(app.screen_name(), "options");
+    // "Default Values" lo deja todo de fábrica, y al salir sin cambios
+    // respecto a la entrada no hay nada que guardar.
+    step(&mut app, "D", 6);
+    step(&mut app, "x", 6);
+    assert_eq!(*app.options(), Options::new(&PadLayout::GENERIC));
+    app.tick([IN_SELECT, 0]);
+    step(&mut app, "", 60);
+    assert_eq!(app.screen_name(), "title");
+    assert!(app.take_options_to_save().is_none());
+}
+
+#[test]
+fn remapped_buttons_reach_the_fight_and_menus_keep_the_factory_ones() {
+    let mut app = App::direct(ROOT, "kfm", "kfm", "kfm").unwrap();
+    app.set_layout(PadLayout::PS2);
+    let mut o = app.options().clone();
+    // L1 (botón 10) pasa a ser el puñetazo flojo, en vez de cuadrado (15).
+    o.keys[0][7] = 10;
+    app.set_options(o);
+    let mut seen = Vec::new();
+    for t in 0..400 {
+        let raw = match t {
+            200..=201 => 1 << 15,
+            260..=261 => 1 << 10,
+            _ => 0,
+        };
+        app.tick([raw, 0]);
+        let no = app.game.as_ref().unwrap().chars[0].stateno;
+        if seen.last() != Some(&no) {
+            seen.push((no, t).0);
+        }
+    }
+    // Cuadrado ya no hace nada; L1 da el puñetazo (estado 200) una sola vez.
+    assert_eq!(seen.iter().filter(|&&s| s == 200).count(), 1, "{seen:?}");
+}
+
+#[test]
+fn life_time_and_difficulty_rules() {
+    // Vida al 50 % y reloj de 30 segundos: la ronda acaba por tiempo.
+    let mut g = game();
+    g.set_rules(50, 30, 4);
+    assert_eq!((g.chars[0].life, g.chars[0].life_max), (500, 500));
+    let mut over_at = None;
+    for t in 0..2400 {
+        g.tick([0, 0]);
+        if g.round.state == 3 && over_at.is_none() {
+            over_at = Some(t);
+        }
+    }
+    let over_at = over_at.expect("la ronda no acabó por tiempo");
+    assert!((1800..2100).contains(&over_at), "acabó en el tick {over_at}");
+
+    // Sin límite de tiempo no acaba nunca sola.
+    let mut g = game();
+    g.set_rules(100, 0, 4);
+    for _ in 0..(100 * 60 + 400) {
+        g.tick([0, 0]);
+    }
+    assert_eq!(g.round.state, 2);
+    assert_eq!((g.round.no, g.chars[0].life), (1, 1000));
+
+    // La máquina pega más con la dificultad alta que con la baja a un rival
+    // que no se mueve; con la de fábrica (4) la pelea es la de siempre.
+    let damage = |level: Option<i32>| {
+        let mut g = game();
+        if let Some(l) = level {
+            g.set_rules(100, 99, l);
+        }
+        g.chars[1].ai = true;
+        for _ in 0..1500 {
+            g.tick([0, 0]);
+            if g.round.state != 2 && g.tick > 400 {
+                break;
+            }
+        }
+        (1000 - g.chars[0].life, g.tick)
+    };
+    let (easy, normal, hard) = (damage(Some(1)), damage(Some(4)), damage(Some(8)));
+    assert!(easy.0 < normal.0 || easy.1 > normal.1, "fácil {easy:?}, normal {normal:?}");
+    assert!(hard.0 > easy.0 || hard.1 < easy.1, "fácil {easy:?}, difícil {hard:?}");
+    assert_eq!(damage(None), normal);
+}
+
+#[test]
+fn slow_game_speed_skips_ticks_without_repeating_sounds() {
+    let mut app = App::direct(ROOT, "kfm", "kfm", "kfm").unwrap();
+    let mut o = app.options().clone();
+    o.speed = -9;
+    app.set_options(o);
+    let mut frame = Frame::default();
+    let (mut sounds, mut last_tick, mut repeats) = (0, -1, 0);
+    for _ in 0..600 {
+        app.tick([0, 0]);
+        app.draw(&mut frame);
+        let tick = app.game.as_ref().unwrap().tick;
+        // Un frame sin tick no vuelve a lanzar los sonidos del anterior.
+        if tick == last_tick {
+            repeats += frame.sounds.len();
+        }
+        last_tick = tick;
+        sounds += frame.sounds.len();
+    }
+    // "Slow 9": 33 ticks de pelea por cada 60 frames.
+    assert_eq!(app.game.as_ref().unwrap().tick, 600 * 33 / 60);
+    assert!(sounds > 0);
+    assert_eq!(repeats, 0);
 }

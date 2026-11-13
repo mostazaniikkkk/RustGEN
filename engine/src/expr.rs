@@ -162,6 +162,18 @@ pub enum Trig {
     Const480p,
     GameWidth,
     GameHeight,
+    NumProjId,
+    PlayerIdExist,
+    ParentDistX,
+    ParentDistY,
+    RootDistX,
+    RootDistY,
+    /// Ticks desde que un proyectil golpeó o fue bloqueado, golpeó, fue
+    /// bloqueado o fue anulado; -1 si no ha pasado.
+    ProjContactTime,
+    ProjHitTime,
+    ProjGuardedTime,
+    ProjCancelTime,
     Zero,
 }
 
@@ -367,7 +379,13 @@ fn simple(name: &str) -> Option<Trig> {
         "numpartner" => NumPartner,
         "numhelper" => NumHelper,
         "numexplod" => NumExplod,
-        "numproj" | "numprojid" => NumProj,
+        "numproj" => NumProj,
+        "numprojid" => NumProjId,
+        "playeridexist" => PlayerIdExist,
+        "projcontacttime" => ProjContactTime,
+        "projhittime" => ProjHitTime,
+        "projguardedtime" => ProjGuardedTime,
+        "projcanceltime" => ProjCancelTime,
         "numtarget" => NumTarget,
         "ishelper" => IsHelper,
         "id" => Id,
@@ -401,8 +419,7 @@ fn simple(name: &str) -> Option<Trig> {
         "gamewidth" => GameWidth,
         "gameheight" => GameHeight,
         // Triggers que este motor no modela: valen 0.
-        "ishometeam" | "numprojcontact" | "projcontacttime" | "projhittime" | "projguardedtime" | "projcanceltime" | "playeridexist"
-        | "teammode" | "isbound" | "matchno" | "timemod" | "movehitcount" => Zero,
+        "ishometeam" | "teammode" | "isbound" | "matchno" | "timemod" | "movehitcount" => Zero,
         _ => return None,
     })
 }
@@ -424,7 +441,10 @@ fn axis(name: &str, y: bool) -> Option<Trig> {
         ("hitvel", true) => HitVelY,
         ("camerapos", false) => CameraPosX,
         ("camerapos", true) => CameraPosY,
-        ("rootdist", _) | ("parentdist", _) => Zero,
+        ("rootdist", false) => RootDistX,
+        ("rootdist", true) => RootDistY,
+        ("parentdist", false) => ParentDistX,
+        ("parentdist", true) => ParentDistY,
         _ => return None,
     })
 }
@@ -735,13 +755,17 @@ impl Parser {
                         }
                     }
                 }
-                // `ProjHit1012`, `ProjContact5`…: llevan el identificador pegado.
-                let proj = ["projhit", "projcontact", "projguarded"].iter().any(|p| name.starts_with(p));
                 let trig = match simple(name) {
                     Some(t) => t,
-                    None if proj || name == "stagevar" => {
-                        // Triggers que este motor no modela: valen 0. Se
-                        // descarta su argumento, que puede no ser una expresión.
+                    None => {
+                        if let Some(e) = self.proj_trigger(name)? {
+                            return Ok(e);
+                        }
+                        if name != "stagevar" {
+                            return Err(format!("trigger desconocido `{name}`"));
+                        }
+                        // No se modela: vale 0. Se descarta su argumento,
+                        // que puede no ser una expresión.
                         if self.eat("(") {
                             let mut depth = 1;
                             while depth > 0 && self.p < self.t.len() {
@@ -755,7 +779,6 @@ impl Parser {
                         }
                         return Ok(Expr::T(Trig::Zero, vec![]));
                     }
-                    None => return Err(format!("trigger desconocido `{name}`")),
                 };
                 let args = self.args()?;
                 if matches!(trig, Trig::Var | Trig::FVar | Trig::SysVar | Trig::SysFVar) && self.eat(":=") {
@@ -766,6 +789,43 @@ impl Parser {
                 Ok(Expr::T(trig, args))
             }
         }
+    }
+}
+
+impl Parser {
+    /// `ProjHit[id] = valor [, operador tiempo]` y sus hermanos
+    /// `ProjContact` y `ProjGuarded`. El identificador va pegado al nombre
+    /// (sin él vale cualquier proyectil). Sin tiempo, se cumple sólo en el
+    /// tick en que ocurre; con él, mientras el tiempo transcurrido cumpla la
+    /// comparación.
+    fn proj_trigger(&mut self, name: &str) -> Result<Option<Expr>, String> {
+        let kinds = [("projcontact", Trig::ProjContactTime), ("projhit", Trig::ProjHitTime), ("projguarded", Trig::ProjGuardedTime)];
+        let Some((rest, trig)) = kinds.iter().find_map(|(p, t)| name.strip_prefix(p).map(|r| (r, *t))) else { return Ok(None) };
+        let id = if rest.is_empty() {
+            0
+        } else {
+            match rest.parse::<i32>() {
+                Ok(n) => n,
+                Err(_) => return Ok(None),
+            }
+        };
+        let time = Expr::T(trig, vec![Expr::int(id)]);
+        let now = Expr::Bin(Op::Eq, bx(time.clone()), bx(Expr::int(0)));
+        let Some(op) = self.cmp_op() else { return Ok(Some(now)) };
+        let value = self.binary(8)?;
+        let mut happened = now;
+        if self.is(",") {
+            let save = self.p;
+            self.p += 1;
+            match self.cmp_op().map(|op2| (op2, self.binary(8))) {
+                Some((op2, Ok(limit))) => {
+                    let since = Expr::Bin(Op::Ge, bx(time.clone()), bx(Expr::int(0)));
+                    happened = Expr::Bin(Op::And, bx(since), bx(Expr::Bin(op2, bx(time), bx(limit))));
+                }
+                _ => self.p = save,
+            }
+        }
+        Ok(Some(Expr::Bin(op, bx(happened), bx(value))))
     }
 }
 
@@ -799,5 +859,31 @@ pub fn split_args(s: &str) -> Vec<&str> {
         }
     }
     out.push(s[start..].trim());
+    out
+}
+
+/// Analiza una lista de expresiones separadas por comas (el valor de un
+/// parámetro). Una redirección lleva su propia coma (`parent, var(1)`), así
+/// que un trozo que no se entiende solo se prueba unido a los siguientes.
+pub fn parse_list(s: &str) -> Vec<Option<Expr>> {
+    let parts = split_args(s);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < parts.len() {
+        let mut found = if parts[i].is_empty() { None } else { parse(parts[i]).ok().map(|e| (e, i)) };
+        if found.is_none() && !parts[i].is_empty() {
+            found = (i + 1..parts.len().min(i + 4)).find_map(|j| parse(&parts[i..=j].join(", ")).ok().map(|e| (e, j)));
+        }
+        match found {
+            Some((e, last)) => {
+                out.push(Some(e));
+                i = last + 1;
+            }
+            None => {
+                out.push(None);
+                i += 1;
+            }
+        }
+    }
     out
 }
